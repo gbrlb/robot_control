@@ -11,13 +11,16 @@ import threading
 import numpy as np
 import pinocchio as pin
 # utility functions
+###W
 from  scipy.linalg import block_diag
 from base_controllers.utils.pidManager import PidManager
 from base_controllers.base_controller import BaseController
 from base_controllers.utils.math_tools import *
-from base_controllers.utils.optimTools import quadprog_solve_qp
 
-from base_controllers.components.inverse_kinematics.inv_kinematics_quadruped import InverseKinematics
+from base_controllers.components.whole_body_controller import WholeBodyController
+from base_controllers.utils.common_functions import *
+from base_controllers.components.inverse_kinematics.inv_kinematics_quadruped import InverseKinematics as AnalyticInverseKinematics
+from base_controllers.components.inverse_kinematics.inv_kinematics_pinocchio import robotKinematics as PinocchioInverseKinematics
 from base_controllers.components.leg_odometry.leg_odometry import LegOdometry
 from termcolor import colored
 
@@ -39,9 +42,9 @@ from base_controllers.components.imu_utils import IMU_utils
 
 import datetime
 
-class Controller(BaseController):
+class QuadrupedController(BaseController):
     def __init__(self, robot_name="hyq", launch_file=None):
-        super(Controller, self).__init__(robot_name, launch_file)
+        super(QuadrupedController, self).__init__(robot_name, launch_file)
         self.qj_0 = conf.robot_params[self.robot_name]['q_0']
         self.dt = conf.robot_params[self.robot_name]['dt']
 
@@ -49,6 +52,13 @@ class Controller(BaseController):
         self.leg_names = [foot[:2] for foot in self.ee_frames]
 
         self.use_ground_truth_pose = True
+        if not self.real_robot:
+            self.gravity_comp_duration = 0.5 #1.5
+            self.standup_period = 1. #3
+        else:
+            self.gravity_comp_duration = 1.5
+            self.standup_period = 3.
+
 
     #####################
     # OVERRIDEN METHODS #
@@ -183,7 +193,9 @@ class Controller(BaseController):
         self.q_des = np.zeros_like(self.q)
 
         self.imu_utils = IMU_utils(dt=conf.robot_params[self.robot_name]['dt'])
-        self.IK = InverseKinematics(self.robot)
+        #pinocchio based
+        self.ikin = PinocchioInverseKinematics(self.robot, conf.robot_params[self.robot_name]['ee_frames'])
+        self.IK = AnalyticInverseKinematics(self.robot)
         self.leg_odom = LegOdometry(self.robot, self.real_robot)
         self.legConfig = {}
         if 'solo' in self.robot_name or  self.robot_name == 'hyq':  # either solo or solo_fw
@@ -192,7 +204,7 @@ class Controller(BaseController):
             self.legConfig['rf'] = ['HipDown', 'KneeInward']
             self.legConfig['rh'] = ['HipDown', 'KneeInward']
 
-        elif self.robot_name == 'aliengo' or self.robot_name == 'go1':
+        elif self.robot_name == 'aliengo' or self.robot_name == 'go1' or self.robot_name == 'go2':
             self.legConfig['lf'] = ['HipDown', 'KneeInward']
             self.legConfig['lh'] = ['HipDown', 'KneeOutward']
             self.legConfig['rf'] = ['HipDown', 'KneeInward']
@@ -220,7 +232,7 @@ class Controller(BaseController):
 
         self.basePoseW_legOdom = np.zeros(3) #* np.nan
         self.baseTwistW_legOdom = np.zeros(3) #* np.nan
-
+        ###W
         self.g_mag = np.linalg.norm(self.robot.model.gravity.vector)
 
         self.grForcesW_des = np.empty(3 * self.robot.nee) * np.nan
@@ -239,6 +251,7 @@ class Controller(BaseController):
         self.kd_j = conf.robot_params[self.robot_name].get('kd'+real_str, np.zeros(self.robot.na))
         self.ki_j = conf.robot_params[self.robot_name].get('ki'+real_str, np.zeros(self.robot.na))
 
+        ###W
         # virtual impedance wrench control
         self.kp_lin = np.diag(conf.robot_params[self.robot_name].get('kp_lin'+real_str, np.zeros(3)))
         self.kd_lin = np.diag(conf.robot_params[self.robot_name].get('kd_lin'+real_str, np.zeros(3)))
@@ -271,6 +284,9 @@ class Controller(BaseController):
         self.wrench_desW_log = np.full( (6, conf.robot_params[self.robot_name]['buffer_size'] ), np.nan)
 
         self.NEMatrix = np.zeros([6, 3*self.robot.nee]) # Newton-Euler matrix
+
+        ###W
+        self.wbc = WholeBodyController(conf.robot_params[self.robot_name], self.real_robot, self.robot)
 
         self.force_th = conf.robot_params[self.robot_name].get('force_th', 0.)
         self.contact_th = conf.robot_params[self.robot_name].get('contact_th', 0.)
@@ -404,11 +420,12 @@ class Controller(BaseController):
 
         self.baseLinTwistImuW_log[:, self.log_counter] = self.imu_utils.baseLinTwistImuW
 
+        ###W
         self.wrench_fbW_log[:, self.log_counter] = self.wrench_fbW
         self.wrench_ffW_log[:, self.log_counter] = self.wrench_ffW
         self.wrench_gW_log[:, self.log_counter] = self.wrench_gW
         self.wrench_desW_log[:, self.log_counter] = self.wrench_desW
-
+###W
 
         self.time_log[self.log_counter] = self.time
         self.loop_time_log[self.log_counter] = self.loop_time
@@ -440,7 +457,7 @@ class Controller(BaseController):
             print('Set world file to slow.world')
             world_name = 'slow.world'
 
-        self.startSimulator(world_name, additional_args)            # run gazebo
+        self.startSimulator(world_name=world_name, additional_args=additional_args)            # run gazebo
         if world_name is None:
             self.world_name_str = ''
         else:
@@ -458,7 +475,7 @@ class Controller(BaseController):
         self.initVars()                            # overloaded method
         self.initSubscribers()
         self.rate = ros.Rate(1 / self.dt)
-        print(colored("Started controller", "blue"))
+        print(colored("Started QuadrupedController", "blue"))
 
 
 
@@ -649,7 +666,7 @@ class Controller(BaseController):
 
     # Whole body controller that includes ffwd wrench + fb wrench (Virtual PD) + gravity compensation
     # all vector is in the wf
-    def WBC(self, des_pose, des_twist, des_acc = None, comControlled = True, type = 'projection'):
+    def WBC(self, des_pose, des_twist, des_acc = None, comControlled = True, type = 'projection', stance_legs=[True, True, True, True]):
         # does side effect on tau_ffwd
         self.virtualImpedanceWrench(des_pose, des_twist, des_acc, comControlled)
         if self.real_robot:
@@ -662,7 +679,7 @@ class Controller(BaseController):
         for leg in range(self.robot.nee):
             start_col = 3 * leg
             end_col = 3 * (leg + 1)
-            if True:#self.contact_state[leg]:
+            if stance_legs[leg]:#self.contact_state[leg]:
                 # ---> linear part
                 # identity matrix (I avoid to rewrite zeros)
                 self.NEMatrix[self.u.sp_crd["LX"], start_col] = 1.
@@ -670,10 +687,14 @@ class Controller(BaseController):
                 self.NEMatrix[self.u.sp_crd["LZ"], start_col + 2] = 1.
                 # ---> angular part
                 # all in a function
-                self.NEMatrix[self.u.sp_crd["AX"]:self.u.sp_crd["AZ"] + 1, start_col:end_col] = \
-                    pin.skew(self.W_contacts[leg] - self.u.linPart(self.comPoseW))
+                if comControlled:
+                    self.NEMatrix[self.u.sp_crd["AX"]:self.u.sp_crd["AZ"] + 1, start_col:end_col] = \
+                        pin.skew(self.W_contacts[leg] - self.u.linPart(self.comPoseW))
+                else:
+                    self.NEMatrix[self.u.sp_crd["AX"]:self.u.sp_crd["AZ"] + 1, start_col:end_col] = \
+                        pin.skew(self.W_contacts[leg] - self.u.linPart(self.basePoseW))
             else:
-                # clean the matrix
+                # clean the matrix (where there are zeros the grf will be zero and so the torques)
                 self.NEMatrix[:, start_col:end_col] = 0.
 
         # Map the desired wrench to grf
@@ -683,7 +704,7 @@ class Controller(BaseController):
             self.grForcesW_wbc = self.qpWBC()
 
         h_jointFromRos = self.u.mapFromRos(self.h_joints)
-        for leg in range(4):
+        for leg in range(4):#(where there are zeros in the Matrix, the grf will be zero and so the torques, no need to check stance legs here)
             tau_leg = self.u.getLegJointState(leg, h_jointFromRos) - \
                       self.wJ[leg].T @ self.u.getLegJointState(leg, self.grForcesW_wbc)
             self.u.setLegJointState(leg, tau_leg, self.tau_ffwd)
@@ -822,7 +843,7 @@ class Controller(BaseController):
         q = p0[1] - m * p0[0]
         return m, q
 
-    def send_command(self, q_des=None, qd_des=None, tau_ffwd=None):
+    def send_command(self, q_des=None, qd_des=None, tau_ffwd=None, log_data_in_send_command = False):
         # q_des, qd_des, and tau_ffwd have dimension 12
         # and are ordered as on the robot
 
@@ -843,8 +864,9 @@ class Controller(BaseController):
         #     self.APPLY_EXTERNAL_WRENCH = False
 
         # log variables
+        if log_data_in_send_command:
+            self.logData()
         self.rate.sleep()
-        self.logData()
         self.sync_check()
         self.time = np.round(self.time + self.dt, 3)#np.array([self.loop_time]), 3)
 
@@ -864,17 +886,11 @@ class Controller(BaseController):
                                        "green", scale=0.0001)
                 #self.ros_pub.add_marker(self.W_contacts[leg], radius=0.001)
 
-            # if (self.use_ground_truth_contacts):
-            #     self.ros_pub.add_arrow(self.W_contacts[leg],
-            #                            self.u.getLegJointState(leg, self.grForcesW_gt / (6 * self.robot.robotMass)),
-            #                            "red")
-            # else:
-            #     self.ros_pub.add_arrow(self.W_contacts[leg],
-            #                            self.u.getLegJointState(leg,self.grForcesW_des / (6 * self.robot.robotMass)),
-            #                            "red")
-            self.ros_pub.add_arrow(self.W_contacts[leg],
-                                   self.u.getLegJointState(leg, self.grForcesW_des / (6 * self.robot.robotMass)),
-                                   "blue")
+            if (self.use_ground_truth_contacts):
+                self.ros_pub.add_arrow(self.W_contacts[leg],
+                                       self.u.getLegJointState(leg, self.grForcesW_gt / (6 * self.robot.robotMass)),
+                                       "red")
+
 
         # self.ros_pub.add_polygon([self.B_contacts[0],
         #                           self.B_contacts[1],
@@ -889,7 +905,7 @@ class Controller(BaseController):
         #                           self.B_contacts_des[0]], "green", visual_frame="base_link")
         #
 
-        self.ros_pub.publishVisual()
+        self.ros_pub.publishVisual(delete_markers=False)
 
     def updateKinematics(self, update_legOdom=True, noise=None):
         if noise is not None:
@@ -905,7 +921,7 @@ class Controller(BaseController):
                                                                                       qd=self.qd,
                                                                                       update_legOdom=update_legOdom)
         self.imu_utils.compute_lin_vel(self.baseLinAccW, self.loop_time)
-        super(Controller, self).updateKinematics()
+        super(QuadrupedController, self).updateKinematics()
 
 
     def checkBaseCollisions(self):
@@ -965,7 +981,7 @@ class Controller(BaseController):
         ros.sleep(.5)
         print(colored("Starting up", "blue"))
         if self.robot_name == 'hyq':
-            super(Controller, self).startupProcedure()
+            super(QuadrupedController, self).startupProcedure()
             return
 
         if self.go0_conf == 'standUp':
@@ -989,9 +1005,9 @@ class Controller(BaseController):
         self.q_des = conf.robot_params[self.robot_name]['q_0']
         alpha = 0.
         try:
-            print(colored("[startupProcedure t: " + str(self.time[0]) + "s] applying gravity compensation", "blue"))
+            print(colored(f"[startupProcedure to {self.q_des} t: " + str(self.time[0]) + "s] applying gravity compensation", "blue"))
             GCStartTime = self.time
-            while True:
+            while not ros.is_shutdown():
                 q_norm = np.linalg.norm(self.q - self.q_des)
                 qd_norm = np.linalg.norm(self.qd - self.qd_des)
                 if q_norm < 0.1 and qd_norm < 0.1 or self.time > 5:
@@ -999,15 +1015,15 @@ class Controller(BaseController):
                 self.updateKinematics()
                 # self.visualizeContacts()
                 GCTime = self.time - GCStartTime
-                if GCTime <= 1.5:
+                if GCTime <= self.gravity_comp_duration:
                     if alpha < 1:
-                        alpha = GCTime/1.5
+                        alpha = GCTime/self.gravity_comp_duration
 
-                self.send_command(self.q_des, self.qd_des, alpha*self.gravityCompensation())
+                self.send_command(self.q_des, self.qd_des, alpha*p.wbc.gravityCompensation(p.W_contacts, p.wJ, p.h_joints, p.basePoseW, p.comPoseW))
 
             # IMU BIAS ESTIMATION
-            print(colored("[startupProcedure t: " + str(self.time[0]) + "s] Imu bias estimation", "blue"))
-            if self.real_robot and self.robot_name == 'go1':
+            if self.real_robot and (self.robot_name == 'go1' or self.robot_name == 'go2'):
+                print(colored("[startupProcedure t: " + str(self.time[0]) + "s] Imu bias estimation", "blue"))
                 # print('counter: ' + self.imu_utils.counter + ', timeout: ' + self.imu_utils.timeout)
                 while self.imu_utils.counter < self.imu_utils.timeout:
                     self.updateKinematics()
@@ -1038,16 +1054,14 @@ class Controller(BaseController):
             if (i%3) != 0:
                 q_ref[i] =  conf.robot_params[self.robot_name]['q_fold'][i]
         # IMU BIAS ESTIMATION
-        print(colored("[startupProcedure t: " + str(self.time[0]) + "s] Imu bias estimation", "blue"))
-        #if self.real_robot and self.robot_name == 'go1':
+        if self.real_robot and (self.robot_name == 'go1' or self.robot_name == 'go2'):
+            print(colored("[startupProcedure t: " + str(self.time[0]) + "s] Imu bias estimation", "blue"))
             # print('counter: ' + self.imu_utils.counter + ', timeout: ' + self.imu_utils.timeout)
-
-        while self.imu_utils.counter < self.imu_utils.timeout:
-            self.updateKinematics()
-            self.imu_utils.IMU_bias_estimation(self.b_R_w, self.baseLinAccB)
-            self.tau_ffwd[:] = 0.
-
-            self.send_command(self.q_des, self.qd_des, self.tau_ffwd)
+            while self.imu_utils.counter < self.imu_utils.timeout:
+                self.updateKinematics()
+                self.imu_utils.IMU_bias_estimation(self.b_R_w, self.baseLinAccB)
+                self.tau_ffwd[:] = 0.
+                self.send_command(self.q_des, self.qd_des, self.tau_ffwd)
 
         self.pid.setPDjoints(self.kp_j, self.kd_j, self.ki_j)
 
@@ -1154,30 +1168,29 @@ class Controller(BaseController):
                 if state == 1:
                     GCTime = self.time-GCStartTime
                     self.qd_des[:] = 0
-                    if GCTime <= 1.5:
+                    if GCTime <= self.gravity_comp_duration:
                         if alpha < 1:
                             alpha = GCTime
                         self.tau_ffwd = alpha* self.self_weightCompensation()
                     else:
-                        print(colored("[startupProcedure t: " + str(self.time[0]) + "s] moving to desired height (" + str(np.around(self.robot_height, 3)) +" m)", "blue"))
+                        print(colored(f"[startupProcedure to make RobotHeight {self.robot_height+0.02} t: " + str(self.time[0]) + "s] moving to desired height (" + str(np.around(self.robot_height, 3)) +" m)", "blue"))
                         HStarttime = self.time
                         # 5-th order polynomial
-                        HPeriod = 3.0
                         final_comPose_des = self.comPoseW.copy()
                         final_comPose_des[2] = self.robot_height+0.02
                         pos, vel, acc = polynomialRef(self.comPoseW, final_comPose_des,
                                                       np.zeros(6), np.zeros(6),
                                                       np.zeros(6), np.zeros(6),
-                                                      HPeriod)
+                                                      self.standup_period)
                         self.W_contacts_des = self.W_contacts.copy()
                         state = 2
 
                 if state == 2:
-                    if self.time - HStarttime < HPeriod:
+                    if self.time - HStarttime < self.standup_period:
                         self.comPoseW_des = pos(self.time - HStarttime)
                         self.comTwistW_des = vel(self.time - HStarttime)
                         self.Wcom2Joints_des()
-                        self.gravityCompensation()
+                        self.wbc.gravityCompensation(self.W_contacts, self.wJ, self.h_joints, self.basePoseW, self.comPoseW)
 
                     else:
                         print(colored("[startupProcedure t: " + str(self.time[0]) + "s] desired height reached", "blue"))
@@ -1195,7 +1208,7 @@ class Controller(BaseController):
                         # enter
                         # if any of the joint velocities is larger than 0.02 or
                         # if the watchdog timer is not expired (0.5 sec)
-                        self.gravityCompensation()
+                        self.wbc.gravityCompensation(self.W_contacts, self.wJ, self.h_joints, self.basePoseW, self.comPoseW)
 
                 self.send_command(self.q_des, self.qd_des, self.tau_ffwd)
 
@@ -1355,28 +1368,25 @@ class Controller(BaseController):
             pass
 
 
-
-
-
-
-
 if __name__ == '__main__':
-    p = Controller('go1')
+    p = QuadrupedController('go2')
     world_name = 'fast.world'
-    use_gui = True
+    use_gui = False
     try:
         #p.startController(world_name='slow.world')
         p.startController(world_name=world_name,
                           use_ground_truth_pose=True,
-                          use_ground_truth_contacts=False,
+                          use_ground_truth_contacts=True,
                           additional_args=['gui:='+str(use_gui),
                                            'go0_conf:=standDown'])
+
         p.startupProcedure()
 
         while not ros.is_shutdown():
             p.updateKinematics()
             p.visualizeContacts()
-            p.tau_ffwd = p.gravityCompensation()
+            p.tau_ffwd, p.grForcesW_wbc = p.wbc.gravityCompensation(p.W_contacts, p.wJ, p.h_joints, p.basePoseW, p.comPoseW)
+            p.logData()
             p.send_command(p.q_des, p.qd_des, p.tau_ffwd)
 
 
@@ -1385,7 +1395,7 @@ if __name__ == '__main__':
         ros.signal_shutdown("killed")
         p.deregister_node()
         
-    from base_controllers.utils.common_functions import *
+
 
     if conf.plotting:
         plotJoint('position', time_log=p.time_log, q_log=p.q_log, q_des_log=p.q_des_log, sharex=True, sharey=False,

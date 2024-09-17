@@ -95,14 +95,13 @@ class Cost():
 
 class JumpLegController(BaseControllerFixed):
 
-    def __init__(self, robot_name="ur5"):
+    def __init__(self, robot_name="jumpleg"):
         super().__init__(robot_name=robot_name)
-        self.agentMode = 'train'
+        self.agentMode = 'inference'
+        self.agentRL = 'PPO'
         self.restoreTrain = False
         self.gui = False
         self.model_name = 'latest'
-
-
         self.EXTERNAL_FORCE = False
         self.DEBUG = False
         self.freezeBaseFlag = False
@@ -500,7 +499,7 @@ class JumpLegController(BaseControllerFixed):
             self.intermediate_com_position.append(
                 self.Bezier3(self.bezier_weights, t[blob], T_th))
 
-    def plotTrajectoryFlight(self, com_f, comd_f, T_fl):
+    def plotTrajectoryFlight(self, com_lo, comd_lo, T_fl):
         self.number_of_blobs = 10
         if T_fl is None:
             T_fl = 0.3
@@ -508,8 +507,8 @@ class JumpLegController(BaseControllerFixed):
         self.intermediate_flight_com_position = []
         com = np.zeros(3)
         for blob in range(self.number_of_blobs):
-            com[2] = com_f[2] + comd_f[2]*t[blob] + 0.5*(-9.81)*t[blob]*t[blob]
-            com[:2] = com_f[:2] + comd_f[:2]*t[blob]
+            com[2] = com_lo[2] + comd_lo[2]*t[blob] + 0.5*(-9.81)*t[blob]*t[blob]
+            com[:2] = com_lo[:2] + comd_lo[:2]*t[blob]
             self.intermediate_flight_com_position.append(com.copy())
 
     def bernstein_pol(self,k,n,x):
@@ -546,13 +545,13 @@ class JumpLegController(BaseControllerFixed):
         else:
             return False
 
-    def loadRLAgent(self, mode='train', data_path=None, model_name='latest', restore_train=False):
-        print(colored(f"Starting RLagent in  {mode} mode", "red"))
+    def loadRLAgent(self, mode='train', rl='TD3', data_path=None, model_name='latest', restore_train=False):
+        print(colored(f"Starting {rl} RLagent in  {mode} mode", "red"))
         package = 'jumpleg_rl'
-        executable = 'JumplegAgent.py'
+        executable = f'JumplegAgent_{rl}.py'
         name = 'rlagent'
         namespace = '/'
-        args = f'--mode {mode} --data_path {data_path} --model_name {model_name} --restore_train {restore_train}'
+        args = f'--mode {mode} --data_path {data_path}_{rl} --model_name {model_name} --restore_train {restore_train}'
         node = roslaunch.core.Node(
             package, executable, name, namespace, args=args, output="screen")
         self.launch = roslaunch.scriptapi.ROSLaunch()
@@ -711,15 +710,15 @@ class JumpLegController(BaseControllerFixed):
         self.reset_joints = ros.ServiceProxy(
             '/gazebo/set_model_configuration', SetModelConfiguration)
 
-    def computeIdealLanding(self, com_lo, comd_f, target_CoM):
+    def computeIdealLanding(self, com_lo, comd_lo, target_CoM):
         #get time of flight
-        arg = comd_f[2]*comd_f[2] - 2*9.81*(target_CoM[2] - com_lo[2])
+        arg = comd_lo[2]*comd_lo[2] - 2*9.81*(target_CoM[2] - com_lo[2])
         if arg<0:
             print(colored("Point Beyond Reach, tagret too high","red"))
             return False
         else:  #beyond apex
-            self.T_fl = (comd_f[2] + math.sqrt(arg))/9.81 # we take the highest value
-            self.ideal_landing = np.hstack((com_lo[:2] + self.T_fl*comd_f[:2], target_CoM[2]))
+            self.T_fl = (comd_lo[2] + math.sqrt(arg))/9.81 # we take the highest value
+            self.ideal_landing = np.hstack((com_lo[:2] + self.T_fl*comd_lo[:2], target_CoM[2]))
             return True
 
 
@@ -742,7 +741,7 @@ def talker(p):
         p.startupProcedure()
 
 
-    p.loadRLAgent(mode=p.agentMode, data_path=os.environ["LOCOSIM_DIR"] + "/robot_control/jumpleg_rl/runs", model_name=p.model_name, restore_train=p.restoreTrain)
+    p.loadRLAgent(mode=p.agentMode, rl=p.agentRL ,data_path=os.environ["LOCOSIM_DIR"] + "/robot_control/jumpleg_rl/runs", model_name=p.model_name, restore_train=p.restoreTrain)
 
     p.initVars()
     ros.sleep(1.0)
@@ -756,13 +755,14 @@ def talker(p):
 
     # initial com posiiton
     com_0 = np.array([-0.01303,  0.00229,  0.25252])
-
-    plt.ion()
-    figure = plt.figure(figsize=(15, 10))
     p.number_of_episode = 0
 
     # here the RL loop...
     while True:
+        # Reset variables
+        p.initVars()
+        p.q_des = np.copy(p.q_des_q0)
+
         p.time = 0.
         startTrust = 0.2
         max_episode_time = 2.0
@@ -788,8 +788,7 @@ def talker(p):
             print(colored("# RECIVED STOP TARGET_COM SIGNAL #", "red"))
             break
 
-        if p.DEBUG: # overwrite target
-            p.target_CoM = np.array([0.3,0,0.25])
+
         state = np.concatenate((com_0, p.target_CoM))
         action = p.action_service(state).action
         #print("Action from agent:", action)
@@ -894,7 +893,6 @@ def talker(p):
                 p.send_des_jstate(p.q_des, p.qd_des, p.tau_ffwd)
 
             # log variables
-
             if p.DEBUG:
                 p.logData()
 
@@ -916,14 +914,12 @@ def talker(p):
                 p.base_offset + p.q[:3] + p.x_ee, np.array([0, 0, 1.]), p.mu, height=0.05, color="blue")
             # p.contactForceW = np.zeros(3) # to be sure it does not retain any "memory" when message are not arriving, so avoid to compute wrong rewards
             p.ros_pub.add_marker(p.target_CoM, color="blue", radius=0.1)
-            # com at LIFT OFF
-            p.ros_pub.add_marker(com_lo, color="red", radius=0.1)
 
-            p.ros_pub.add_marker(p.ideal_landing, color="red", radius=0.1)
+            if (np.linalg.norm(p.ideal_landing) > 0.):
+                p.ros_pub.add_marker(p.ideal_landing, color="purple", radius=0.1)
             #reachable space
             #p.ros_pub.add_marker([0, 0, 0], color="green", radius=0.64)
 
-            p.ros_pub.add_arrow(com_lo, comd_lo, "red")
             # plot com intermediate positions
             for blob in range(len(p.intermediate_com_position)):
                 p.ros_pub.add_marker(p.intermediate_com_position[blob], color=[
@@ -932,13 +928,22 @@ def talker(p):
             for blob in range(len(p.intermediate_flight_com_position)):
                 p.ros_pub.add_marker(p.intermediate_flight_com_position[blob], color=[blob * 1. / p.number_of_blobs, blob * 1. / p.number_of_blobs,
                                                 blob * 1. / p.number_of_blobs], radius=0.02)
-            p.ros_pub.add_marker(p.bezier_weights[:, 0], color="red",  radius=0.02)
-            p.ros_pub.add_marker(p.bezier_weights[:, 1], color="red", radius=0.02)
-            p.ros_pub.add_marker(p.bezier_weights[:, 2], color="red", radius=0.02)
-            p.ros_pub.add_marker(p.bezier_weights[:, 3], color="red", radius=0.02)
+            if p.DEBUG:
+                p.ros_pub.add_marker(p.bezier_weights[:, 0], color="red",  radius=0.02)
+                p.ros_pub.add_marker(p.bezier_weights[:, 1], color="red", radius=0.02)
+                p.ros_pub.add_marker(p.bezier_weights[:, 2], color="red", radius=0.02)
+                p.ros_pub.add_marker(p.bezier_weights[:, 3], color="red", radius=0.02)
+
+
+            # com at LIFT OFF given by the N network
+            if p.DEBUG:
+                p.ros_pub.add_arrow(com_lo, comd_lo, "red")
+                p.ros_pub.add_marker(com_lo, color="red", radius=0.1)
+
             if (not p.trustPhaseFlag):
-                p.ros_pub.add_arrow(p.actual_com_lo, p.actual_comd_lo, "green")
-                p.ros_pub.add_marker(p.actual_com_lo, color="green", radius=0.1)
+                if p.DEBUG:
+                    p.ros_pub.add_arrow(p.actual_com_lo, p.actual_comd_lo, "green")
+                    p.ros_pub.add_marker(p.actual_com_lo, color="green", radius=0.1)
 
             p.ros_pub.publishVisual()
 
@@ -951,9 +956,13 @@ def talker(p):
         # eval rewards
         p.evalTotalReward(com_lo, comd_lo)
         p.cost.reset()
-        plt.cla()
+
         if p.DEBUG:
-            break
+            plotJoint('position', p.time_log, q_log=p.q_log, q_des_log=p.q_des_log,
+                      joint_names=conf.robot_params[p.robot_name]['joint_names'])
+            plt.savefig(f'{p.number_of_episode}.png')
+            plt.close('all')
+            #break
 
 
 if __name__ == '__main__':
@@ -967,7 +976,7 @@ if __name__ == '__main__':
     finally:
         ros.signal_shutdown("killed")
         p.deregister_node()
-        if conf.plotting:
+        if p.DEBUG:
             print("PLOTTING")
             plotFrameLinear('velocity', p.time_log, des_Twist_log=p.comd_des_log)
             plotFrameLinear('wrench', p.time_log,  Wrench_log=p.contactForceW_log)

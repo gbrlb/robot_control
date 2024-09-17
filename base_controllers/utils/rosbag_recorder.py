@@ -49,6 +49,7 @@ import shlex
 import signal
 import time
 import rospy
+from termcolor import colored
 from std_srvs.srv import Empty, EmptyResponse
 from base_controllers.utils.common_functions import checkRosMaster
 
@@ -76,7 +77,11 @@ def format_to_columns(input_list, cols):
 class RosbagControlledRecorder(object):
     """Record a rosbag with service calls to control start, stop  and pause"""
 
-    def __init__(self, rosbag_command_, record_from_startup_=False):
+    def __init__(self, topics=' -a', bag_name=None, record_from_startup_=False):
+        rosbag_command_ = "rosbag record"+topics
+        self.bag_name = bag_name
+        if self.bag_name is not None:
+            rosbag_command_+=" -O "+self.bag_name
         self.rosbag_command = shlex.split(rosbag_command_)
         self.recording_started = False
         self.recording_paused = False
@@ -87,6 +92,7 @@ class RosbagControlledRecorder(object):
             self.start_recording_srv()
 
     def start_recording_srv(self, service_message=None):
+        print(colored(f"Starting Bag {self.bag_name}", "red"))
         process = subprocess.Popen(self.rosbag_command)
         self.process_pid = process.pid
         self.recording_started = True
@@ -109,6 +115,7 @@ class RosbagControlledRecorder(object):
             rospy.logwarn("Recording not yet started - nothing to be done")
 
     def stop_recording_srv(self, service_message=None):
+        print(colored("Saving Bag", "red"))
         if self.process_pid is not None:
             if self.recording_paused:  # need to resume process in order to cleanly kill it
                 self.pause_resume_recording_srv()

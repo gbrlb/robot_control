@@ -20,9 +20,13 @@ import rospy as ros
 import rosnode
 import roslaunch
 import rosgraph
+import tf2_ros
+from geometry_msgs.msg import TransformStamped
 from roslaunch.parent import ROSLaunchParent
 import copy
 from base_controllers.utils.utils import Utils
+import subprocess
+import pinocchio
 
 #from urdf_parser_py.urdf import URDF
 #make plot interactive
@@ -82,23 +86,178 @@ def checkRosMaster():
         parent = ROSLaunchParent("roscore", [], is_core=True)  # run_id can be any string
         parent.start()
 
-def startNode(node_name):
-    
+def launchFileNode(package,launch_file, additional_args=None):
+    launch_file = rospkg.RosPack().get_path(package) + '/launch/'+launch_file
+    uuid = roslaunch.rlutil.get_or_generate_uuid(None, False)
+    roslaunch.configure_logging(uuid)
+    cli_args = [launch_file]
+    if additional_args is not None:
+        cli_args.extend(additional_args)
+    roslaunch_args = cli_args[1:]
+    roslaunch_file = [(roslaunch.rlutil.resolve_launch_arguments(cli_args)[0], roslaunch_args)]
+    parent = roslaunch.parent.ROSLaunchParent(uuid, roslaunch_file)
+    parent.start()
+
+def launchFileGeneric(launch_file):
+    # run robot state publisher + load robot description + rviz
+    uuid = roslaunch.rlutil.get_or_generate_uuid(None, False)
+    roslaunch.configure_logging(uuid)
+    launch = roslaunch.parent.ROSLaunchParent(uuid, [launch_file])
+    launch.start()
+
+def startNode(package, executable, args=''):
     nodes = rosnode.get_node_names()
-    if "/reference_generator" in nodes:
+    #kill previous instances
+    if package in nodes:
         print(colored("Re Starting ref generator","red"))
-        os.system("rosnode kill /"+node_name)
-    package = node_name
-    executable = node_name
-    name = node_name
+        os.system("rosnode kill /"+package)
+    package = package
+    executable = executable
+    name = package
     namespace = ''
-    node = roslaunch.core.Node(package, executable, name, namespace, output="screen")
+    node = roslaunch.core.Node(package, executable, name, namespace, args=args, output="screen")
     launch = roslaunch.scriptapi.ROSLaunch()
     launch.start()
     process = launch.launch(node)
 
 
-def getRobotModel(robot_name="hyq", generate_urdf = False, xacro_path = None, additional_urdf_args = None):
+def loadXacro(package_name, model_name):
+    print(colored(f"Loading xacro for  {model_name} inside {package_name}", "blue"))
+    # first generate robot description
+    xacro_path = rospkg.RosPack().get_path(package_name) + '/robots/' + model_name + '.urdf.xacro'
+    command_string = "rosrun xacro xacro "+xacro_path
+
+    try:
+        robot_description_param = subprocess.check_output(command_string,shell=True,  stderr=subprocess.STDOUT).decode("utf-8") # shell=True is fundamental to load env variables!
+    except subprocess.CalledProcessError as process_error:
+        ros.logfatal('Failed to run xacro command with error: \n%s', process_error.output)
+        sys.exit(1)
+
+    # put on param server
+    ros.set_param('/'+model_name, robot_description_param)
+
+def spawnModel(package_name, model_name='',  spawn_pos=np.array([0.,0.,0.]), spawn_orient = np.array([0.,0.,0.]) ):
+    loadXacro(package_name, model_name)
+    print(colored(f"Spawning {model_name}", "blue"))
+    package = 'gazebo_ros'
+    executable = 'spawn_model'
+    name = model_name
+    namespace = '/'
+    args = '-urdf -param ' +model_name +' -model ' + model_name +' -x '+ str(spawn_pos[0])+ ' -y ' + str(spawn_pos[1]) +' -z ' + str(spawn_pos[2]) \
+           + ' -R ' + str(spawn_orient[0]) + ' -P ' + str(spawn_orient[1]) + ' -Y ' + str(spawn_orient[2])
+    node = roslaunch.core.Node(package, executable, name, namespace,args=args,output="screen")
+    launch = roslaunch.scriptapi.ROSLaunch()
+    launch.start()
+    process = launch.launch(node)
+
+def sendStaticTransform(parent, child, x_pos = np.zeros(3), quat=np.array([1,0,0,0]), static_broadcaster=None):
+    static_transformStamped = TransformStamped()
+    static_transformStamped.header.stamp = ros.Time.now()
+    static_transformStamped.header.frame_id = parent
+    static_transformStamped.child_frame_id = child
+    static_transformStamped.transform.translation.x = 0.
+    static_transformStamped.transform.translation.y = 0.
+    static_transformStamped.transform.translation.z = 0.
+    static_transformStamped.transform.rotation.x = 0
+    static_transformStamped.transform.rotation.y = 0
+    static_transformStamped.transform.rotation.z = 0
+    static_transformStamped.transform.rotation.w = 1
+    if static_broadcaster is None:
+        static_broadcaster = tf2_ros.StaticTransformBroadcaster()
+    static_broadcaster.sendTransform(static_transformStamped)
+
+def getRobotModelFloating(robot_name="hyq"):
+    ERROR_MSG = 'You should set the environment variable LOCOSIM_DIR"\n'
+    path = os.environ.get('LOCOSIM_DIR', ERROR_MSG)
+    if rosgraph.is_master_online():
+        try:
+            urdf = ros.get_param('/robot_description')
+            print("URDF generated_commons")
+            os.makedirs(path + "/robot_urdf/generated_urdf/", exist_ok=True)
+            urdf_location = path + "/robot_urdf/generated_urdf/" + robot_name + ".urdf"
+            print(urdf_location)
+            text_file = open(urdf_location, "w")
+            text_file.write(urdf)
+            text_file.close()
+            robot = RobotWrapper.BuildFromURDF(urdf_location, root_joint=pinocchio.JointModelFreeFlyer())
+        except:
+            print('Issues in URDF generation for Pinocchio, did not succeed')
+    else: #this is used when you run stuff online (i.e. unit tests)
+        try:
+            urdf_location = path + "/robot_urdf/generated_urdf/" + robot_name + ".urdf"
+            robot = RobotWrapper.BuildFromURDF(urdf_location, root_joint=pinocchio.JointModelFreeFlyer())
+        except:
+            print('you are running offline, urdf is not present in robot_urdf/generated_urdf folder')
+
+    return robot
+
+
+def getRobotModel(robot_name="hyq", generate_urdf=False, xacro_path=None, additional_urdf_args=None):
+    ERROR_MSG = 'You should set the environment variable LOCOSIM_DIR"\n'
+    path = os.environ.get('LOCOSIM_DIR', ERROR_MSG)
+    srdf = path + "/robot_urdf/" + robot_name + ".srdf"
+
+    if (generate_urdf):
+        try:
+            # old way
+            if (xacro_path is None):
+                xacro_path = rospkg.RosPack().get_path(
+                    robot_name + '_description') + '/robots/' + robot_name + '.urdf.xacro'
+
+            package = 'xacro'
+            executable = 'xacro'
+            name = 'xacro'
+            namespace = '/'
+            # with gazebo 11 you should set in the ros_impedance_controllerXX.launch the new_gazebo_version = true
+            # note we generate the urdf with the floating base joint (new gazebo version should be false by default in the xacro of the robot! because Pinocchio needs it!
+            args = xacro_path + ' --inorder -o ' + os.environ[
+                'LOCOSIM_DIR'] + '/robot_urdf/generated_urdf/' + robot_name + '.urdf'
+
+            try:
+                flywheel = ros.get_param('/flywheel4')
+                args += ' flywheel4:=' + flywheel
+            except:
+                pass
+
+            try:
+                flywheel2 = ros.get_param('/flywheel2')
+                args += ' flywheel2:=' + flywheel2
+            except:
+                pass
+
+            try:
+                angle = ros.get_param('/angle_deg')
+                args += ' angle_deg:=' + angle
+            except:
+                pass
+
+            try:
+                anchorZ = ros.get_param('/anchorZ')
+                args += ' anchorZ:=' + anchorZ
+            except:
+                pass
+
+            if additional_urdf_args is not None:
+                args += ' ' + additional_urdf_args
+
+            os.system("rosrun xacro xacro " + args)
+            # os.system("rosparam get /robot_description > "+os.environ['LOCOSIM_DIR']+'/robot_urdf/'+robot_name+'.urdf')
+            # urdf = URDF.from_parameter_server()
+            print("URDF generated_commons")
+            urdf_location = path + "/robot_urdf/generated_urdf/" + robot_name + ".urdf"
+            print(urdf_location)
+            robot = RobotWrapper.BuildFromURDF(urdf_location)
+            print("URDF loaded in Pinocchio")
+        except:
+            print('Issues in URDF generation for Pinocchio, did not succeed')
+    else:
+
+        urdf = path + "/robot_urdf/" + robot_name + ".urdf"
+        robot = RobotWrapper.BuildFromURDF(urdf, [path, srdf])
+
+    return robot
+
+def getRobotModel(robot_name="hyq", generate_urdf = False, xacro_path = None, additional_urdf_args = None, floating_base=False):
     ERROR_MSG = 'You should set the environment variable LOCOSIM_DIR"\n';
     path  = os.environ.get('LOCOSIM_DIR', ERROR_MSG)
     srdf      = path + "/robot_urdf/" + robot_name + ".srdf"
@@ -152,7 +311,10 @@ def getRobotModel(robot_name="hyq", generate_urdf = False, xacro_path = None, ad
             print("URDF generated_commons")
             urdf_location      = path + "/robot_urdf/generated_urdf/" + robot_name+ ".urdf"
             print(urdf_location)
-            robot = RobotWrapper.BuildFromURDF(urdf_location)
+            if floating_base:
+                robot = RobotWrapper.BuildFromURDF(urdf_location, root_joint=pinocchio.JointModelFreeFlyer())
+            else:
+                robot = RobotWrapper.BuildFromURDF(urdf_location)
             print("URDF loaded in Pinocchio")
         except:
             print ('Issues in URDF generation for Pinocchio, did not succeed')
@@ -177,8 +339,9 @@ def subplot(n_rows, n_cols, n_subplot, sharex=False, sharey=False, ax_to_share=N
 
 def plotJoint(name, time_log, q_log=None, q_des_log=None, qd_log=None, qd_des_log=None, qdd_log=None, qdd_des_log=None, tau_log=None, tau_ffwd_log = None, tau_des_log = None, joint_names = None, q_adm = None,
               sharex=False, sharey=False, start=0, end=-1):
+    plot_var_log = None
     plot_var_des_log = None
-    if name == 'position':
+    if name=='position':
         unit = '[rad]'
         if   (q_log is not None):
             plot_var_log = q_log
@@ -189,7 +352,7 @@ def plotJoint(name, time_log, q_log=None, q_des_log=None, qd_log=None, qd_des_lo
         else:
             plot_var_des_log = None
 
-    elif name == 'velocity':
+    if name=='velocity':
         unit = '[rad/s]'
         if   (qd_log is not None):
             plot_var_log = qd_log
@@ -200,7 +363,7 @@ def plotJoint(name, time_log, q_log=None, q_des_log=None, qd_log=None, qd_des_lo
         else:
             plot_var_des_log = None
 
-    elif name == 'acceleration':
+    if name=='acceleration':
         unit = '[rad/s^2]'
         if   (qdd_log is not None):
             plot_var_log = qdd_log
@@ -211,7 +374,7 @@ def plotJoint(name, time_log, q_log=None, q_des_log=None, qd_log=None, qd_des_lo
         else:
             plot_var_des_log = None
 
-    elif name == 'torque':
+    if name=='torque':
         unit = '[Nm]'
         if   (tau_log is not None):
             plot_var_log = tau_log
@@ -221,9 +384,6 @@ def plotJoint(name, time_log, q_log=None, q_des_log=None, qd_log=None, qd_des_lo
             plot_var_des_log  = tau_des_log
         else:
           plot_var_des_log = None                                                
-    else:
-       print(colored("plotJoint error: wrong input string", "red") )
-       return
 
     dt = np.round(time_log[1] - time_log[0], 3)
     if type(start) == str:
@@ -235,6 +395,8 @@ def plotJoint(name, time_log, q_log=None, q_des_log=None, qd_log=None, qd_des_lo
         njoints = min(plot_var_log.shape)
     elif plot_var_des_log is not None:
         njoints = min(plot_var_des_log.shape)
+    else:
+        print("no log var has been defined")
 
     if len(plt.get_fignums()) == 0:
         figure_id = 1
@@ -254,6 +416,7 @@ def plotJoint(name, time_log, q_log=None, q_des_log=None, qd_log=None, qd_des_lo
             labels = labels_flywheel4
     else:
         labels = joint_names
+        njoints = len(joint_names)
 
     if (njoints % 3 == 0): #divisible by 3
         n_rows = int(njoints/ 3)
@@ -485,9 +648,10 @@ def plotFrame(name, time_log, des_Pose_log=None, Pose_log=None, des_Twist_log=No
     return fig
 
 def plotFrameLinear(name, time_log, des_Pose_log=None, Pose_log=None, des_Twist_log=None, Twist_log=None, des_Acc_log=None, Acc_log=None,
-              des_Wrench_log=None, Wrench_log=None, title=None, frame=None, sharex=True, sharey=True, start=0, end=-1):
+              des_Wrench_log=None, Wrench_log=None, title=None, frame=None, sharex=True, sharey=False, start=0, end=-1):
     plot_var_log = None
     plot_var_des_log = None
+    labels = ["", "", ""]
     if name == 'position':
         labels = ["x", "y", "z"]
         lin_unit = '[m]'

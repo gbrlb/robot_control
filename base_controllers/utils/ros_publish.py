@@ -81,7 +81,7 @@ class RosPub():
         self.joint_pub.publish(msg)
         self.publishVisual()                                   
  
-    def publishVisual(self):                                
+    def publishVisual(self, delete_markers = True):
         #publish also the markers if any
         if len(self.markerArray.markers)>0:
             self.marker_pub.publish(self.markerArray)
@@ -106,8 +106,8 @@ class RosPub():
 
 
 
-
-        self.delete_all_markers()
+        if delete_markers:
+            self.delete_all_markers()
 
     def add_marker(self, pos, radius = 0.1, color = "red"):
         marker = Marker()
@@ -130,6 +130,10 @@ class RosPub():
            marker.color.r = 0.0
            marker.color.g = 1.0
            marker.color.b = 0.0
+        if (color == "purple"):
+            marker.color.r = 0.7
+            marker.color.g = 0.0
+            marker.color.b = 1.0
         marker.pose.orientation.x = 0.
         marker.pose.orientation.y = 0.
         marker.pose.orientation.z = 0.

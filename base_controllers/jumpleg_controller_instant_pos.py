@@ -25,6 +25,8 @@ from termcolor import colored
 from base_controllers.utils.common_functions import plotJoint, plotFrameLinear
 from numpy import nan
 import matplotlib.pyplot as plt
+from collections import deque
+import numpy.matlib
 
 import rospkg
 import rospy as ros
@@ -44,11 +46,13 @@ class Cost():
         self.singularity = 0
         self.joint_range = 0
         self.joint_torques = 0
-        self.no_touchdown = 0
+        self.fly_config = 0
+        self.hop = 0
         self.smoothness = 0
+        self.straight = 0
         self.target = 0
 
-        self.weights = np.array([0., 0., 0., 0., 0., 0., 0., 0.])
+        self.weights = np.array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0.])
 
     def reset(self):
         self.unilateral = 0
@@ -56,8 +60,10 @@ class Cost():
         self.singularity = 0
         self.joint_range = 0
         self.joint_torques = 0
-        self.no_touchdown = 0
+        self.fly_config = 0
+        self.hop = 0
         self.smoothness = 0
+        self.straight = 0
         self.target = 0
 
     def printCosts(self):
@@ -66,8 +72,10 @@ class Cost():
                f"sing: {self.singularity} " \
                f"jointkin:{self.joint_range} " \
                f"torques:{self.joint_torques} " \
-               f"no_touchdown:{self.no_touchdown} " \
+               f"fly_config:{self.fly_config} " \
+               f"hop:{self.hop} " \
                f"smoothness:{self.smoothness} " \
+               f"straight:{self.straight} " \
                f"target:{self.target}"
 
     def printWeightedCosts(self):
@@ -76,16 +84,19 @@ class Cost():
                f"sing: {self.weights[2]*self.singularity} " \
                f"jointkin:{self.weights[3]*self.joint_range} " \
                f"torques:{self.weights[4]*self.joint_torques} " \
-               f"no_touchdown:{self.weights[5] * self.no_touchdown} " \
-               f"smoothness:{self.weights[6] * self.smoothness} " \
-               f"target:{self.weights[7]*self.target}"
+               f"fly_config:{self.weights[5]*self.fly_config} " \
+               f"hop:{self.weights[6]*self.hop} " \
+               f"smoothness:{self.weights[7] * self.smoothness} " \
+               f"straight:{self.weights[8] * self.straight} " \
+               f"target:{self.weights[9]*self.target}"
 
 
 class JumpLegController(BaseControllerFixed):
 
-    def __init__(self, robot_name="ur5"):
+    def __init__(self, robot_name="jumpleg"):
         super().__init__(robot_name=robot_name)
         self.agentMode = 'train'
+        self.agentRL = 'PPO'
         self.restoreTrain = False
         self.gui = False
         self.model_name = 'latest'
@@ -185,8 +196,9 @@ class JumpLegController(BaseControllerFixed):
         self.a = np.empty((3, 6))
         self.cost = Cost()
 
-        #  unilateral  friction   singularity   joint_range  joint_torques no_touchdown smoothness target
-        self.cost.weights = np.array([1000., 0.1, 10., 0.01, 1000., 10, 0.1, 1.])
+        #  unilateral  friction   singularity   joint_range  joint_torques fly_config hop smoothness straight target
+        self.cost.weights = np.array(
+            [1000., 0.1, 10., 0.01, 1000., 10, 20, 0.5, 10, 1.])
 
         self.mu = 0.8
 
@@ -211,13 +223,13 @@ class JumpLegController(BaseControllerFixed):
 
         self.set_state = ros.ServiceProxy(
             '/gazebo/set_model_state', SetModelState)
-        print("JumplegAgentTorque services ready")
+        print("JumplegAgentInstantPos services ready")
         self.action_service = ros.ServiceProxy(
-            'JumplegAgentTorque/get_action', get_action)
+            'JumplegAgentInstantPos/get_action', get_action)
         self.target_service = ros.ServiceProxy(
-            'JumplegAgentTorque/get_target', get_target)
+            'JumplegAgentInstantPos/get_target', get_target)
         self.reward_service = ros.ServiceProxy(
-            'JumplegAgentTorque/set_reward', set_reward_original)
+            'JumplegAgentInstantPos/set_reward', set_reward_original)
 
     def logData(self):
         if (self.log_counter < conf.robot_params[self.robot_name]['buffer_size']):
@@ -322,7 +334,7 @@ class JumpLegController(BaseControllerFixed):
         foot_pos_w = self.base_offset + self.q[:3] + self.x_ee
         # foot tradius is 0.015
         foot_lifted_off = (foot_pos_w[2] > 0.017)
-        com_up = (self.com[2] > 0.27)
+        com_up = (self.com[2] > 0.26)
         if not self.detectedApexFlag and com_up and foot_lifted_off:
             if (self.qd[2] < 0.0):
                 self.detectedApexFlag = True
@@ -347,13 +359,13 @@ class JumpLegController(BaseControllerFixed):
         else:
             return False
 
-    def loadRLAgent(self, mode='train', data_path=None, model_name='latest', restore_train=False):
-        print(colored(f"Starting RLagent in  {mode} mode", "red"))
+    def loadRLAgent(self, mode='train', rl='TD3', data_path=None, model_name='latest', restore_train=False):
+        print(colored(f"Starting {rl} RLagent in  {mode} mode", "red"))
         package = 'jumpleg_rl'
-        executable = 'JumplegAgentTorque.py'
+        executable = f'JumplegAgentInstantPos_{rl}.py'
         name = 'rlagent'
         namespace = '/'
-        args = f'--mode {mode} --data_path {data_path} --model_name {model_name} --restore_train {restore_train}'
+        args = f'--mode {mode} --data_path {data_path}_{rl} --model_name {model_name} --restore_train {restore_train}'
         node = roslaunch.core.Node(
             package, executable, name, namespace, args=args, output="screen")
         self.launch = roslaunch.scriptapi.ROSLaunch()
@@ -361,10 +373,10 @@ class JumpLegController(BaseControllerFixed):
         process = self.launch.launch(node)
 
         # wait for agent service to start
-        print("Waiting for JumplegAgentTorque services")
-        ros.wait_for_service('JumplegAgentTorque/get_action')
-        ros.wait_for_service('JumplegAgentTorque/get_target')
-        ros.wait_for_service('JumplegAgentTorque/set_reward')
+        print("Waiting for JumplegAgentInstantPos services")
+        ros.wait_for_service('JumplegAgentInstantPos/get_action')
+        ros.wait_for_service('JumplegAgentInstantPos/get_target')
+        ros.wait_for_service('JumplegAgentInstantPos/set_reward')
 
     def computeActivationFunction(self, activationType, value, lower, upper):
 
@@ -403,8 +415,15 @@ class JumpLegController(BaseControllerFixed):
         # smoothness
         c1 = 2.5
         c2 = 1.5
-        # self.cost.smoothness += c1*(np.linalg.norm(self.old_q[0] - self.old_q[1])**2)+c2*(
-        #     np.linalg.norm(self.old_q[0] - 2*self.old_q[1] + self.old_q[2])**2)
+        self.cost.smoothness += c1*(np.linalg.norm(self.old_action[0] - self.old_action[1])**2)+c2*(
+            np.linalg.norm(self.old_action[0] - 2*self.old_action[1] + self.old_action[2])**2)
+
+        # straight
+        x0, y0, _ = self.com
+        x1, y1, _ = self.com_0
+        x2, y2, _ = self.target_CoM
+        # self.cost.straight = np.linalg.norm((x2 - x1)*(y1-y0)-(x1-x0)*(y2-y1))/np.sqrt(((x2-x1)**2)*((y2-y1)**2))
+        self.cost.straight = 0
 
         # singularity
         # the lower singular value is also achieved when the leg squats which is not what we want
@@ -437,37 +456,39 @@ class JumpLegController(BaseControllerFixed):
             print(colored("Weighted Costs: " +
                   self.cost.printWeightedCosts(), "green"))
 
-        reward = self.cost.weights[7] * target_cost - (self.cost.weights[0]*self.cost.unilateral +
+        reward = self.cost.weights[9] * target_cost - (self.cost.weights[0]*self.cost.unilateral +
                                                        self.cost.weights[1]*self.cost.friction +
                                                        self.cost.weights[2] * self.cost.singularity +
                                                        self.cost.weights[3]*self.cost.joint_range +
                                                        self.cost.weights[4] * self.cost.joint_torques +
-                                                       self.cost.weights[5] * self.cost.no_touchdown +
-                                                       self.cost.weights[6] * self.cost.smoothness)
+                                                       self.cost.weights[5] * self.cost.fly_config +
+                                                       self.cost.weights[6] * self.cost.hop +
+                                                       self.cost.weights[7] * self.cost.smoothness +
+                                                       self.cost.weights[8] * self.cost.straight)
 
         if reward < 0:
             reward = 0
 
-        self.total_reward += reward
+        if done != -1:
 
-        # unil  friction sing jointrange torques target
+            msg.next_state = np.concatenate((self.com, self.comd, self.q[3:]/np.pi, self.qd[3:]/20.,  self.target_CoM,
+                                            [np.linalg.norm([self.com-self.target_CoM])], np.array(self.old_action).flatten()/(np.pi/2)))
 
-        msg.next_state = np.concatenate((self.com/0.65, self.q[3:]/np.pi, self.qd[3:]/20.,  self.target_CoM/0.65, [np.linalg.norm(
-            [p.com-p.target_CoM])/0.65], self.old_q.flatten()/np.pi, self.old_qd.flatten()/20., self.old_action.flatten()/(np.pi/2), self.old_com.flatten()/0.65))
-        # msg.reward = self.total_reward
-        msg.reward = reward
-        # print(self.total_reward)
-        msg.done = done
-        msg.target_cost = target_cost
-        msg.unilateral = self.cost.unilateral
-        msg.friction = self.cost.friction
-        msg.singularity = self.cost.singularity
-        msg.joint_range = self.cost.joint_range
-        msg.joint_torques = self.cost.joint_torques
-        msg.no_touchdown = self.cost.no_touchdown
-        msg.smoothness = self.cost.smoothness
-        msg.apex = self.detectedApexFlag
-        self.reward_service(msg)
+            msg.reward = reward
+            msg.state = self.state
+            msg.action = self.action
+            msg.done = done
+            msg.target_cost = target_cost
+            msg.unilateral = self.cost.unilateral
+            msg.friction = self.cost.friction
+            msg.singularity = self.cost.singularity
+            msg.joint_range = self.cost.joint_range
+            msg.joint_torques = self.cost.joint_torques
+            msg.fly_config = self.cost.fly_config
+            msg.hop = self.cost.hop
+            msg.smoothness = self.cost.smoothness
+            msg.straight = self.cost.straight
+            self.reward_service(msg)
 
     def deregister_node(self):
         super().deregister_node()
@@ -514,7 +535,7 @@ def talker(p):
         p.loadModelAndPublishers()
         p.startupProcedure()
 
-    p.loadRLAgent(mode=p.agentMode, data_path=os.environ["LOCOSIM_DIR"] +
+    p.loadRLAgent(mode=p.agentMode, rl=p.agentRL, data_path=os.environ["LOCOSIM_DIR"] +
                   "/robot_control/jumpleg_rl/runs_joints", model_name=p.model_name, restore_train=p.restoreTrain)
 
     p.initVars()
@@ -528,27 +549,28 @@ def talker(p):
     p.updateKinematicsDynamics()
 
     # initial com posiiton
-    com_0 = np.array([-0.01303,  0.00229,  0.25252])
+    p.com_0 = np.array([-0.01303,  0.00229,  0.25252])
     p.number_of_episode = 0
 
     # here the RL loop...
     while True:
 
-        # Rest variables
+        # Reset variables
         p.initVars()
         p.q_des = np.copy(p.q_des_q0)
-        figure = plt.figure(figsize=(15, 10))
+        if p.DEBUG:
+            figure = plt.figure(figsize=(15, 10))
 
         # ros.sleep(0.3)
         p.time = 0.
         startTrust = 0
-        p.old_q = np.array(
-            [p.q_des_q0[3:].copy(), p.q_des_q0[3:].copy(), p.q_des_q0[3:].copy()])
-        p.old_qd = np.zeros((3, 3))
-        p.old_action = np.zeros((3, 3))
-        p.old_com = np.array([com_0,com_0,com_0])
         n_old_state = 3
-        state_index = 0
+        # p.old_q = deque(np.matlib.repmat(
+        # p.q_des_q0[3:].copy(), n_old_state, 1))
+        # p.old_qd = deque(np.zeros((n_old_state, 3)))
+        p.old_action = deque(np.zeros((n_old_state, 3)))
+        # p.old_com = deque(np.matlib.repmat(p.com_0, n_old_state, 1))
+
         max_episode_time = 2
         p.total_reward = 0
         p.number_of_episode += 1
@@ -558,15 +580,14 @@ def talker(p):
         p.detectedApexFlag = False
         p.trustPhaseFlag = False
         p.comd_lo = np.zeros(3)
-        # p.target_CoM = np.array(p.target_service().target_CoM)
-        p.target_CoM = np.array([0.32756, -0.35236, 0.27955])
+        p.target_CoM = np.array(p.target_service().target_CoM)
 
-        if p.DEBUG:  # overwrite target
-            p.target_CoM = np.array([0.3, 0, 0.25])
+        # if p.DEBUG:  # overwrite target
+        #     p.target_CoM = np.array([0.3, 0, 0.25])
 
         p.pause_physics_client()
         for i in range(10):
-            p.setJumpPlatformPosition(com_0-[0, 0, 0.3])
+            p.setJumpPlatformPosition(p.com_0-[0, 0, 0.3])
         p.unpause_physics_client()
         if p.target_CoM[2] == -1:
             print(colored("# RECIVED STOP TARGET_COM SIGNAL #", "red"))
@@ -582,8 +603,6 @@ def talker(p):
                 if (p.time > startTrust + max_episode_time):
                     # max episode time elapsed
                     print(colored("--Max time elapsed!--", "blue"))
-                    # Penalize the non touchdown
-                    p.cost.no_touchdown = 100
                     timout_occured = True
                 # release base
                 if p.firstTime:
@@ -594,42 +613,52 @@ def talker(p):
                         f"STARTING A NEW EPISODE--------------------------------------------# :{p.number_of_episode}", "red"))
                     print("Target position from agent:", p.target_CoM)
                     p.trustPhaseFlag = True
+                    # intial contact counter
+                    p.ground_contact = 1
 
-                # update old state
-                p.old_q[state_index] = p.q[3:].copy()
-                p.old_qd[state_index] = p.qd[3:].copy()
-                p.old_action[state_index] = p.action.copy()
-                p.old_com[state_index] = p.com.copy()
-                state_index = (state_index + 1) % n_old_state
+                if not p.detectedApexFlag:
+                    # update counter only if robot is not flying
+                    if p.contactForceW[2] > 1:
+                        p.ground_contact += 1
+                else:
+                    # after the flight phase no penalty is applied
+                    p.ground_contact = 1
+
+                # update the cost of hopping
+                p.cost.hop = p.ground_contact - 1
 
                 # Ask for torque value
-                state = np.concatenate((p.com/0.65, p.q[3:]/np.pi, p.qd[3:]/20., p.target_CoM/0.65, [np.linalg.norm(
-                    [p.com-p.target_CoM])/0.65], p.old_q.flatten()/np.pi, p.old_qd.flatten()/20., p.old_action.flatten()/(np.pi/2), p.old_com.flatten()/0.65))
-                # print(state)
+                p.state = np.concatenate((p.com, p.comd, p.q[3:]/np.pi, p.qd[3:]/20.,  p.target_CoM,
+                                          [np.linalg.norm([p.com-p.target_CoM])], np.array(p.old_action).flatten()/(np.pi/2)))
 
-                if any(np.isnan(state)):
-                    print(f"Agent state:\n {state}\n")
+                # print(p.state)
+
+                if any(np.isnan(p.state)):
+                    print(f"Agent state:\n {p.state}\n")
                     print(colored('NAN IN STATE!!!', 'red'))
                     quit()
 
-                p.action = np.asarray(p.action_service(state).action)
-                # After apex disable Agent action
-                if (p.detectedApexFlag):
-                    p.action = np.array([0., 0., 0.])
+                p.action = np.asarray(p.action_service(p.state).action)
 
                 # print(f"Actor action with torques:\n {action}\n")
                 if any(np.isnan(p.action)):
-                    print(f"Agent state:\n {state}\n")
-                    print(f"Actor action with des positions:\n {p.action}\n")
+                    print(f"Agent state:\n {p.state}\n")
+                    print(
+                        f"Actor action with des positions:\n {p.action}\n")
                     print(colored('NAN IN ACTION!!!', 'red'))
                     quit()
+
+                # update queue
+                p.old_action.pop()
+                p.old_action.appendleft(p.action.copy())
 
                 # Apply action
                 p.q_des[3:] = p.q_des_q0[3:] + p.action
 
                 p.qd_des = np.zeros(6)
                 # add gravity compensation
-                p.tau_ffwd[3:] = - p.J.T.dot(p.g[:3])  # +p.robot.robot_mass*p.comdd)
+                # +p.robot.robot_mass*p.comdd)
+                p.tau_ffwd[3:] = - p.J.T.dot(p.g[:3])
 
                 if p.evaluateRunningCosts():
                     break  # robot has fallen
@@ -638,6 +667,8 @@ def talker(p):
                 if (p.detectedApexFlag):
                     p.tau_ffwd[3:] = np.zeros(3)
                     # set jump platform (avoid collision in jumping)
+                    # calculate the error between aerial conf and q0
+                    p.cost.fly_config = np.linalg.norm(p.q[3:] - p.q_des_q0[3:])
                     if p.detectTouchDown():
                         break  # END STATE
 
@@ -656,6 +687,7 @@ def talker(p):
 
                 # rest cost (much easyer to learn difference between last loop, paper: heim)
                 p.cost.reset()
+                # p.freq_counter = (p.freq_counter + 1) % p.sampling_freq
 
             # plot end-effector and contact force
             if not p.use_ground_truth_contacts:
@@ -703,7 +735,7 @@ if __name__ == '__main__':
     finally:
         ros.signal_shutdown("killed")
         p.deregister_node()
-        if conf.plotting:
+        if p.DEBUG:
             print("PLOTTING")
             # plotFrameLinear('wrench', p.time_log, Wrench_log=p.contactForceW_log)
             plotJoint('position', p.time_log, q_log=p.q_log, q_des_log=p.q_des_log,

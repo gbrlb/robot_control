@@ -17,6 +17,7 @@ from sensor_msgs.msg import JointState
 from nav_msgs.msg import Odometry
 from tf.transformations import euler_from_quaternion
 from std_srvs.srv import Empty
+from base_controllers.utils.math_tools import unwrap_vector
 from termcolor import colored
 
 #gazebo messages
@@ -24,9 +25,9 @@ from gazebo_msgs.srv import SetModelState
 from gazebo_msgs.srv import SetModelStateRequest
 from gazebo_msgs.msg import ModelState
 #gazebo services
+from gazebo_msgs.srv import GetPhysicsProperties
 from gazebo_msgs.srv import SetPhysicsProperties
 from gazebo_msgs.srv import SetPhysicsPropertiesRequest
-from gazebo_msgs.srv import GetPhysicsProperties
 
 # ros utils
 import roslaunch
@@ -38,11 +39,8 @@ import tf
 from base_controllers.utils.ros_publish import RosPub
 from base_controllers.utils.pidManager import PidManager
 from base_controllers.utils.math_tools import *
-from numpy import nan
-import matplotlib.pyplot as plt
 from base_controllers.utils.common_functions import *
 import pinocchio as pin
-from base_controllers.utils.common_functions import getRobotModel
 from ros_impedance_controller.msg import EffortPid
 
 #dynamics
@@ -115,7 +113,7 @@ class BaseController(threading.Thread):
         self.math_utils = Math()
         # send data to param server
         self.verbose = conf.verbose
-        self.custom_launch_file = False
+        self.custom_locosim_launch_file = False
         self.use_ground_truth_contacts = False
         self.apply_external_wrench = False
         self.time_external_wrench = 0.6
@@ -123,10 +121,10 @@ class BaseController(threading.Thread):
         self.use_torque_control = False
         self.real_robot = conf.robot_params[self.robot_name].get('real_robot', False)
         self.broadcast_world = broadcast_world
-
+        self.publish_contact_gt_in_wf = False
         print("Initialized basecontroller---------------------------------------------------------------")
 
-    def startSimulator(self, world_name = None, additional_args = None):
+    def startSimulator(self, world_name = None, launch_file = None, additional_args = None):
         # needed to be able to load a custom world file
         print(colored('Adding gazebo model path!', 'blue'))
         custom_models_path = rospkg.RosPack().get_path('ros_impedance_controller')+"/worlds/models/"
@@ -138,10 +136,11 @@ class BaseController(threading.Thread):
         # clean up previous process
         os.system("killall rosmaster rviz gzserver gzclient")
 
-        if self.custom_launch_file:
-            launch_file = rospkg.RosPack().get_path('ros_impedance_controller') + '/launch/ros_impedance_controller_' + self.robot_name + '.launch'
-        else:
-            launch_file = rospkg.RosPack().get_path('ros_impedance_controller') + '/launch/ros_impedance_controller_floating.launch'
+        if launch_file is None:
+            if self.custom_locosim_launch_file:
+                launch_file = rospkg.RosPack().get_path('ros_impedance_controller') + '/launch/ros_impedance_controller_' + self.robot_name + '.launch'
+            else:
+                launch_file = rospkg.RosPack().get_path('ros_impedance_controller') + '/launch/ros_impedance_controller_floating.launch'
 
         uuid = roslaunch.rlutil.get_or_generate_uuid(None, False)
         roslaunch.configure_logging(uuid)
@@ -174,7 +173,7 @@ class BaseController(threading.Thread):
                 self.robot_name + '_description') + '/robots/' + self.robot_name + '.urdf.xacro'
         else:
             print("loading custom xacro path: ", xacro_path)
-        self.robot = getRobotModel(self.robot_name, generate_urdf=True, xacro_path=xacro_path)
+        self.robot = getRobotModelFloating(self.robot_name)
 
         # instantiating objects
         self.ros_pub = RosPub(self.robot_name, only_visual=True)
@@ -248,6 +247,8 @@ class BaseController(threading.Thread):
         self.quaternion[2]=    msg.pose.pose.orientation.z
         self.quaternion[3]=    msg.pose.pose.orientation.w
         self.euler = np.array(euler_from_quaternion(self.quaternion))
+        #unwrap
+        self.euler, self.euler_old = unwrap_vector(self.euler, self.euler_old)
 
         self.basePoseW[self.u.sp_crd["LX"]] = msg.pose.pose.position.x
         self.basePoseW[self.u.sp_crd["LY"]] = msg.pose.pose.position.y
@@ -284,22 +285,29 @@ class BaseController(threading.Thread):
                 if self.joint_names[joint_idx] == msg.name[msg_idx]:
                     self.tau_fb[joint_idx] = msg.effort_pid[msg_idx]
 
-    def send_des_jstate(self, q_des, qd_des, tau_ffwd):
+    def send_des_jstate(self, q_des, qd_des, tau_ffwd, soft_limits = 0.9, clip_commands = False):
          # No need to change the convention because in the HW interface we use our conventtion (see ros_impedance_contoller_xx.yaml)
          msg = JointState()
          msg.name = self.joint_names
-         msg.position = q_des
-         msg.velocity = qd_des
-         msg.effort = tau_ffwd                
+         if clip_commands:
+             msg.position = np.clip(q_des,self.robot.model.lowerPositionLimit[-self.robot.na:] * soft_limits ,self.robot.model.upperPositionLimit[-self.robot.na:] * soft_limits)
+             msg.velocity = np.clip(qd_des, -self.robot.model.velocityLimit[-self.robot.na:] * soft_limits ,self.robot.model.velocityLimit[-self.robot.na:] * soft_limits)
+             msg.effort = np.clip(tau_ffwd, -self.robot.model.effortLimit[-self.robot.na:] * soft_limits ,self.robot.model.effortLimit[-self.robot.na:] * soft_limits)
+         else:
+             msg.position = q_des
+             msg.velocity = qd_des
+             msg.effort = tau_ffwd
          self.pub_des_jstate.publish(msg)
+
 
     def deregister_node(self):
         print( "deregistering nodes"     )
         self.ros_pub.deregister_node()
         os.system(" rosnode kill /"+self.robot_name+"/ros_impedance_controller")    
-        os.system(" rosnode kill /gazebo")   
-      
- 
+        os.system(" rosnode kill /gazebo")
+        os.system("pkill rosmaster")
+
+
     def get_contact(self):
         return self.W_contacts
     def get_pose(self):
@@ -321,6 +329,7 @@ class BaseController(threading.Thread):
         self.set_physics_client(req_reset_gravity)
 
     def freezeBase(self, flag, basePoseW=None, baseTwistW=None):
+        print(colored("Freezing base", "blue"))
         if flag:
             self.setGravity(0)
         else:
@@ -392,7 +401,7 @@ class BaseController(threading.Thread):
         for leg in range(4):
             self.B_contacts[leg] = self.robot.framePlacement(self.neutral_fb_jointstate,
                                                              self.robot.model.getFrameId(ee_frames[leg]),
-                                                             update_kinematics=False ).translation
+                                                             update_kinematics=False ).translation.copy()
             self.W_contacts[leg] = self.mapBaseToWorld(self.B_contacts[leg].transpose())
         if self.use_ground_truth_contacts:
             for leg in range(4):
@@ -440,7 +449,7 @@ class BaseController(threading.Thread):
         self.compositeRobotInertiaB = self.robot.compositeRobotInertiaB(self.configuration)
 
     def estimateContactForces(self):           
-        # estimate ground reaxtion forces from tau 
+        # estimate ground reaction forces from tau
         for leg in range(4):
             grf = self.wJ_inv[leg].T.dot(self.u.getLegJointState(leg,  self.h_joints-self.tau ))
             self.u.setLegJointState(leg, grf, self.grForcesW)
@@ -456,11 +465,22 @@ class BaseController(threading.Thread):
         if self.use_ground_truth_contacts:
             for leg in range(4):
                 grfLocal_gt = self.u.getLegJointState(leg,  self.grForcesLocal_gt)
-                grf_gt = self.w_R_lowerleg[leg] @ grfLocal_gt
-                self.u.setLegJointState(leg, grf_gt, self.grForcesW_gt)
+                if self.publish_contact_gt_in_wf:#if you spawn a robot platform it starts ti publish in WF
+                    grf_gt = grfLocal_gt
+                else:
+                    grf_gt = self.w_R_lowerleg[leg] @ grfLocal_gt
 
-    def applyForce(self, Fx, Fy, Fz, Mx, My, Mz, duration):
+                self.u.setLegJointState(leg, grf_gt, self.grForcesW_gt)
+                # contact state is computed using gt forces if use_ground_truth_contacts == True (previous computation is overridden)
+                if self.contact_normal[leg].dot(grf_gt) >= conf.robot_params[self.robot_name]['force_th']:
+                    self.contact_state[leg] = True
+
+                else:
+                    self.contact_state[leg] = False
+
+    def applyForce(self, Fx, Fy, Fz, Mx, My, Mz, duration, link_name="base_link"):
         from geometry_msgs.msg import Wrench, Point
+
         wrench = Wrench()
         wrench.force.x = Fx
         wrench.force.y = Fy
@@ -471,7 +491,7 @@ class BaseController(threading.Thread):
         reference_frame = "world"  # you can apply forces only in this frame because this service is buggy, it will ignore any other frame
         reference_point = Point(x=0, y=0, z=0)
         try:
-            self.apply_body_wrench(body_name=self.robot_name+"::base_link", reference_frame=reference_frame,
+            self.apply_body_wrench(body_name=self.robot_name+"::"+link_name, reference_frame=reference_frame,
                                    reference_point=reference_point, wrench=wrench, duration=ros.Duration(duration))
         except:
             pass
@@ -545,6 +565,7 @@ class BaseController(threading.Thread):
         self.tau_fb = np.zeros(self.robot.na)
         self.q_des = np.zeros(self.robot.na)
         self.quaternion = np.array([0., 0., 0., 1.]) #fundamental otherwise receivepose gets stuck
+        self.euler_old = np.zeros(3)
         self.q_des = conf.robot_params[self.robot_name]['q_0']
         self.qd_des = np.zeros(self.robot.na)
         self.tau_ffwd = np.zeros(self.robot.na)
@@ -585,7 +606,7 @@ class BaseController(threading.Thread):
         self.loop_time = conf.robot_params[self.robot_name]['dt']
         self.log_counter = 0
 
-        # order: lf rf lh rh
+        # order: lf lh rf rh
         if self.use_ground_truth_contacts:
             self.lowerleg_index = [0]*4
             self.lowerleg_frame_names = []
@@ -616,14 +637,27 @@ class BaseController(threading.Thread):
         new_time = ros.Time.now().to_sec()
         if  hasattr(self, 'ros_time'):
             self.loop_time = new_time-self.ros_time
-            #if  self.loop_time> conf.robot_params[self.robot_name]['dt']*1.05:
-                #print('Out of loop frequency')
+            # if  self.loop_time> conf.robot_params[self.robot_name]['dt']*1.05:
+            #     print('Out of loop frequency')
         self.ros_time = new_time
+
+    def setSimSpeed(self, dt_sim=0.001, max_update_rate=1000, iters=50):
+        physics_req = SetPhysicsPropertiesRequest()
+        physics_req.time_step = dt_sim
+        physics_req.max_update_rate = max_update_rate
+        physics_req.ode_config.sor_pgs_iters = iters
+        physics_req.ode_config.sor_pgs_w = 1.3
+        physics_req.ode_config.contact_surface_layer = 0.001
+        physics_req.ode_config.contact_max_correcting_vel = 100
+        physics_req.ode_config.erp = 0.2
+        physics_req.ode_config.max_contacts = 20
+        physics_req.gravity.z = -9.81
+        self.set_physics_client(physics_req)
 	
 def talker(p):
     p.start()
     if  (p.robot_name == 'solo_fw'):
-        p.custom_launch_file = True
+        p.custom_locosim_launch_file = True
     p.startSimulator()
     p.loadModelAndPublishers()
     p.initVars()
@@ -631,40 +665,26 @@ def talker(p):
     p.startupProcedure()
 
     #loop frequency       
-    rate = ros.Rate(1/conf.robot_params[p.robot_name]['dt']) 
-    
-#    ros.sleep(0.1)
-#    p.resetGravity(True) 
-#    
-#    print ("Start flight phase")
-    
-#    p.time = 0.0
-#    RPM2RAD =2*np.pi/60.0
-#    omega = 5000*RPM2RAD
+    rate = ros.Rate(1/conf.robot_params[p.robot_name]['dt'])
 
+    # use this if rostopic hz /command it gives frequency < rate
+    #p.setSimSpeed(max_update_rate=100)
     #control loop
     while not ros.is_shutdown():
         #update the kinematics
-        p.updateKinematics()    
+        p.updateKinematics()
 
-        # controller
+        # implement your own controller
         if p.use_torque_control:
+            p.pid.setPDs(0,0,0)
             p.tau_ffwd = conf.robot_params[p.robot_name]['kp'] * np.subtract(p.q_des,   p.q)  - conf.robot_params[p.robot_name]['kd']*p.qd + p.gravity_comp
             #p.tau_ffwd[12:] =0.01 * np.subtract(p.q_des[12:],   p.q[12:])  - 0.001*p.qd[12:]
         else:
             p.tau_ffwd = np.zeros(p.robot.na)
-        
-        
-        #        p.q_des[14] += omega *conf.robot_params[p.robot_name_]['dt']		
-#        p.q_des[15] += -omega *conf.robot_params[p.robot_name_]['dt']	    
 
-        #max torque
-#        p.tau_ffwd[14]= 0.21
-#        p.tau_ffwd[15] = -0.21
-        
-        p.send_des_jstate(p.q_des, p.qd_des, p.tau_ffwd)
+        p.send_des_jstate(p.q_des, p.qd_des, p.tau_ffwd, clip_commands=p.real_robot)
           
-	   # log variables
+	    # log variables
         p.logData()    
         
         # plot actual (green) and desired (blue) contact forces 
@@ -672,15 +692,11 @@ def talker(p):
             p.ros_pub.add_arrow(p.W_contacts[leg], p.contact_state[leg]*p.u.getLegJointState(leg, p.grForcesW/(6*p.robot.robotMass)),"green")
             if (p.use_ground_truth_contacts):
                 p.ros_pub.add_arrow(p.W_contacts[leg], p.u.getLegJointState(leg, p.grForcesW_gt / (6 * p.robot.robotMass)), "red")
-        p.ros_pub.publishVisual()      				
-  
-#        if (p.time>0.5): 
-#            print ("pitch", p.basePoseW[p.u.sp_crd["AY"]])
-#            break;
+        p.ros_pub.publishVisual()
 
         #wait for synconization of the control loop
         rate.sleep()     
-        p.sync_check()
+        #p.sync_check()
         p.time = np.round(p.time + np.array([p.loop_time]), 3) # to avoid issues of dt 0.0009999
 
         if (p.apply_external_wrench and p.time > p.time_external_wrench):
@@ -697,10 +713,11 @@ if __name__ == '__main__':
         ros.signal_shutdown("killed")
         p.deregister_node()
         if conf.plotting:
-            plotJoint('position', time_log=p.time_log, q_log=p.q_log, q_des_log=p.q_des_log, sharex=True, sharey=False,
-                      start=0, end=-1)
-            plotFrame('position', time_log=p.time_log, des_Pose_log=p.basePoseW_des_log, Pose_log=p.basePoseW_log,
+            plotJoint('position', time_log=p.time_log, q_log=p.q_log, q_des_log=p.q_des_log, joint_names=p.joint_names)
+            plotFrame('position', time_log=p.time_log, Pose_log=p.basePoseW_log,
                       title='CoM', frame='W', sharex=True, sharey=False, start=0, end=-1)
+            plotJoint('torque', time_log=p.time_log, tau_log=p.tau_log, joint_names=p.joint_names)
+
 
 
 

@@ -59,15 +59,17 @@ from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
 
-from  base_controllers.doretta.utils import constants as constants
-from  base_controllers.doretta.environment.trajectory import Trajectory, ModelsList
-from  base_controllers.doretta.models.unicycle import Unicycle
-from  base_controllers.doretta.controllers.lyapunov import LyapunovController, LyapunovParams
-import base_controllers.doretta.velocity_tests as vt
-from base_controllers.doretta.utils.tools import unwrap
+from  base_controllers.tracked_robot.utils import constants as constants
+from  base_controllers.tracked_robot.environment.trajectory import Trajectory, ModelsList
+from  base_controllers.tracked_robot.models.unicycle import Unicycle
+from  base_controllers.tracked_robot.controllers.lyapunov import LyapunovController, LyapunovParams
+from base_controllers.tracked_robot.velocity_generator import VelocityGenerator
+from base_controllers.tracked_robot.utils.tools import unwrap
 
 from nav_msgs.msg import Odometry
 from tf.transformations import euler_from_quaternion
+
+# I cannot inherit from basecontroller because mir description is part of a ros package and I have issues generating Pinocchio from the xacro
 
 class BaseControllerMobile(threading.Thread):
     """
@@ -189,11 +191,10 @@ class BaseControllerMobile(threading.Thread):
                                            ros.Time.now(), '/base_link', '/world')
 
 
-    def send_des_command(self, vx, vy, omega):
+    def send_des_command(self, vx, omega):
          # No need to change the convention because in the HW interface we use our conventtion (see ros_impedance_contoller_xx.yaml)
          msg = Twist()
          msg.linear.x = vx
-         msg.linear.y = vy
          msg.angular.z = omega
          self.pub_des_jstate.publish(msg)  
                 
@@ -232,8 +233,9 @@ class BaseControllerMobile(threading.Thread):
         self.ctrl_omega_log = np.empty((conf.robot_params[self.robot_name]['buffer_size']))* nan
         self.v_ref_log = np.empty((conf.robot_params[self.robot_name]['buffer_size']))* nan
         self.omega_ref_log = np.empty((conf.robot_params[self.robot_name]['buffer_size']))* nan
+        self.V_log = np.empty((conf.robot_params[self.robot_name]['buffer_size']))* nan
+        self.V_dot_log = np.empty((conf.robot_params[self.robot_name]['buffer_size']))* nan
 
-        self.log_counter = 0
         self.log_counter = 0
 
 
@@ -251,6 +253,8 @@ class BaseControllerMobile(threading.Thread):
             self.ctrl_omega_log[self.log_counter] = self.ctrl_omega
             self.v_ref_log[self.log_counter] = self.v_ref
             self.omega_ref_log[self.log_counter] = self.omega_ref
+            self.V_log[self.log_counter] = self.V
+            self.V_dot_log[self.log_counter] = self.V_dot
 
             self.time_log[self.log_counter] = self.time
             self.log_counter+=1
@@ -298,15 +302,17 @@ def talker(p):
     print(f"Initial pos X: {robot.x} Y: {robot.y} th: {robot.theta}")
 
     #vel_gen = vt.velocity_mir
-    vel_gen = vt.velocity_mir_smooth
+    vel_gen = VelocityGenerator(simulation_time=10., DT=conf.robot_params[p.robot_name]['dt'])
     initial_des_x = 0.1
     initial_des_y = 0.1
     initial_des_theta = 0.3
-    p.traj = Trajectory(ModelsList.UNICYCLE, initial_des_x, initial_des_y, initial_des_theta, vel_gen)
+    p.traj = Trajectory(ModelsList.UNICYCLE, initial_des_x, initial_des_y, initial_des_theta,
+                        vel_gen.velocity_mir_smooth, conf.robot_params[p.robot_name]['dt'])
+
     # Lyapunov controller parameters
     K_P = 5.0
     K_THETA = 1.0
-    params = LyapunovParams(K_P=K_P, K_THETA=K_THETA)
+    params = LyapunovParams(K_P=K_P, K_THETA=K_THETA, DT=conf.robot_params[p.robot_name]['dt'])
     controller = LyapunovController(params=params)
     controller.config(start_time=p.time, trajectory=p.traj)
 
@@ -326,13 +332,12 @@ def talker(p):
         # v_l = v - omega *b/2
         # v_r = v + omega * b / 2
 
-        #
         # # SAFE CHECK -> clipping velocities
         # v = np.clip(v, -constants.MAX_LINEAR_VELOCITY, constants.MAX_LINEAR_VELOCITY)
         # o = np.clip(o, -constants.MAX_ANGULAR_VELOCITY, constants.MAX_ANGULAR_VELOCITY)
 
         # send commands to gazebo
-        p.send_des_command(p.ctrl_v, 0., p.ctrl_omega)
+        p.send_des_command(p.ctrl_v, p.ctrl_omega)
         # log variables
         p.logData()
 
@@ -359,7 +364,7 @@ if __name__ == '__main__':
             plt.grid(True)
 
             # # VELOCITY
-            plt.figure(3)
+            plt.figure(2)
             plt.subplot(2, 1, 1)
             plt.plot(p.time_log, p.ctrl_v_log, "-b", label="REAL")
             plt.plot(p.time_log, p.v_ref_log, "-r", label="desired")
@@ -377,6 +382,17 @@ if __name__ == '__main__':
             plt.ylabel("angular velocity[rad/s]")
             # plt.axis("equal")
             plt.grid(True)
+
+
+            # liapunov
+            plt.figure(3)
+            plt.plot(p.time_log, p.V_log, "-b", label="REAL")
+            plt.legend()
+            plt.xlabel("time[sec]")
+            plt.ylabel("V liapunov")
+            # plt.axis("equal")
+            plt.grid(True)
+
 
 
             #plotJoint('position', time_log=p.time_log, q_des_log=p.q_des_log, q_log=p.q_log, joint_names=p.joint_names)

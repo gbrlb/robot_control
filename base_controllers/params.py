@@ -8,6 +8,59 @@ Created on Thu Apr 18 09:47:07 2019
 import numpy as np
 
 robot_params = {}
+
+robot_params['myrobot'] ={'dt': 0.001,
+                        'kp': np.array([10.,   10.,    10.,  10.]),
+                        'kd':  np.array([1.,    1.,    1.,   1.  ]),
+                        'q_0':  np.array([0, 0, 0, 0]),
+                        'joint_names': ['lf_shoulder_pan', 'lh_shoulder_pan',  'rf_shoulder_pan', 'rh_shoulder_pan'],
+                        'ee_frames': ['lf_foot', 'lh_foot', 'rf_foot','rh_foot'],
+                        'spawn_x': 0.0,
+                        'spawn_y': 0.0,
+                        'spawn_z': 1.0,
+                        'buffer_size': 30001}
+
+robot_params['z1'] ={'dt': 0.001,
+                        'kp': np.array([20.,   20.,    20.,  20., 20.,  20.]),
+                        'kd':  np.array([0.5,    0.5,    0.5,   0.5, 0.5, 0.5]),
+                        'q_0':  np.array([0, 0.5, -1, 0, 0, 0]),
+                        'joint_names': ['joint1', 'joint2',  'joint3', 'joint4', 'joint5', 'joint6'],
+                        'ee_frame': ['tool0'], #TODO rename ee_frame to ee_frames
+                        'spawn_x': 0.0,
+                        'spawn_y': 0.0,
+                        'spawn_z': 0.0,
+                        'buffer_size': 30001}
+
+robot_params['tractor'] ={'dt': 0.01,
+                        'kp': np.array([100.,   100.,    100.,  100.]),
+                        'kd':  np.array([10.,    10.,    10.,   10.  ]),
+                        'q_0':  np.array([0, 0, 0, 0]),
+                        'joint_names': ['front_left_wheel_joint', 'front_right_wheel_joint'], # caster wheels are passive joints
+                        'ee_frames': ['front_left_wheel', 'front_right_wheel'],
+                        'spawn_x': -0.,
+                        'spawn_y': 0.0,
+                        'spawn_z': 1.0,
+                        'buffer_size': 5000}
+
+robot_params['ur5'] ={'dt': 0.001,
+                       'kp': np.array([300, 300, 300,30,30,1]),
+                       'kd':  np.array([20,20,20,5, 5,0.5]),
+                       'ki':  np.array([.0,.0,.0,.0, .0,.0]),
+                       'q_0':  np.array([ -0.32,-0.78, -2.56,-1.63, -1.57, 3.49]),
+                       'joint_names': ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
+                                       'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'],
+                       'ee_frame': 'tool0',
+                       'control_mode': 'point', # 'trajectory','point'
+                       'real_robot': False,
+                       'control_type': 'position', # 'position', 'torque'
+                       'gripper_sim': True, # False: the gripper is treated as a Rigid Body
+                       'gripper_type': 'soft_2', # 3 finger rigid gripper: 'hard',  2 finger soft gripper: 'soft_2',
+                                                    # robotiq gripper: 'robotiq_2' (does not work in torque mode!)
+                       'spawn_x' : 0.5,
+                       'spawn_y' : 0.35,
+                       'spawn_z' : 1.75,
+                       'buffer_size': 2000}
+
 robot_params['hyq'] = {'dt': 0.004,
                         'kp': np.array([400, 400, 400, 400, 400, 400, 400, 400, 400, 400, 400, 400]),
                         'kd': np.array([6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]),
@@ -69,13 +122,17 @@ robot_params['solo_fw'] ={'dt': 0.002,
 robot_params['aliengo'] ={'dt': 0.002,
                         'kp': 60.*np.array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.]),
                         'kd': 10.*np.array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.]),
+                        'ki': 0.*np.array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.]),
                         'kp_real': 15.*np.array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.]),
                         'kd_real': 0.5*np.array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.]),
                         #'q_0':  np.array([0.2, 0.7, -1.4, -0.2, 0.7, -1.4, 0.2, 0.7, -1.4, -0.2, 0.7, -1.4]),
-                        'q_0':  np.array([0.2, 0.78, -1.7,   -0.20, 0.78, -1.7, 0.20, 0.78, -1.7, -0.20, 0.78, -1.7]),
+                        'q_0':  np.array([0.2, 0.78, -1.7,   0.20, 0.78, -1.7, -0.20, 0.78, -1.7, -0.20, 0.78, -1.7]),
                         #'q_fold': np.array([0.6, 1.7, -2.77, 0.6, 1.7, -2.77, -0.6, 1.52, -2.77, -0.6, 1.52, -2.77]),
                         'q_fold': np.array([0.2, 1.7, -2.7,  -0.2, 1.7, -2.7, 0.2, 1.7, -2.7, -0.2, 1.7, -2.7]),
-                        'joint_names': ['lf_haa_joint', 'lf_hfe_joint', 'lf_kfe_joint',
+                        'q_0_td': np.array([0.1789, 1.2234, -2.2329, 0.1867, 1.4733, -2.1055, -0.1784, 1.2230, -2.2327, -0.1861, 1.4733, -2.1053]),
+                        'q_0_lo': np.array([0.3430, 1.5495, -2.6620, 0.3433, 1.9171, -2.4902, -0.3425, 1.5490, -2.6620, -0.3424, 1.9171, -2.4901]),
+
+                          'joint_names': ['lf_haa_joint', 'lf_hfe_joint', 'lf_kfe_joint',
                                        'lh_haa_joint', 'lh_hfe_joint', 'lh_kfe_joint',
                                        'rf_haa_joint', 'rf_hfe_joint', 'rf_kfe_joint',
                                        'rh_haa_joint', 'rh_hfe_joint', 'rh_kfe_joint'],
@@ -87,14 +144,14 @@ robot_params['aliengo'] ={'dt': 0.002,
                           'spawn_z': 0.5,
                           'buffer_size': 30001} # note the frames are all aligned with base for joints = 0
 robot_params['go1'] ={'dt': 0.002,
-                      'buffer_size': 60001, # 120 seconds
+                      'buffer_size': 5001, # 120 seconds
                       # simulation gains
                       # stand alone joint pid
-                      'kp': np.array([15., 15., 15.]*4),
-                      'kd': np.array([1., 1., 1.]*4),
+                      'kp': 5*np.array([15., 15., 15.]*4),
+                      'kd': np.array([3., 3., 3.]*4),
                       'ki': np.array([0., 0., 0.]*4),
                       # joint pid + wbc (optional)
-                      'kp_wbc': np.array([15., 15., 15.]*4),#np.array([10., 10., 10.]*4),
+                      'kp_wbc': 5*np.array([15., 15., 15.]*4),#np.array([10., 10., 10.]*4),
                       'kd_wbc': np.array([1., 1., 1.]*4),#np.array([1., 1., 1.]*4),
                       'ki_wbc': np.array([0., 0., 0.]*4),#np.array([0.3, 0.3, 0.3]*4),
                       # virtual impedance wrench control
@@ -105,32 +162,35 @@ robot_params['go1'] ={'dt': 0.002,
                       # real robot gains
                       # stand alone joint pid
                       'kp_real': np.array([30., 30.,30.]*4),
-                      'kd_real': np.array([.3, .3, .3]*4),
+                      'kd_real': 0.5*np.array([.3, .3, .3]*4),
                       'ki_real': np.array([1.5, 1.5, 1.5]*4),
                       # joint pid + wbc (optional)
                       'kp_wbc_real': np.array([20., 30., 40.]*4),
-                      'kd_wbc_real': np.array([.3, .3, .3]*4),
+                      'kd_wbc_real': 0.5*np.array([.3, .3, .3]*4),
                       'ki_wbc_real': np.array([1.5, 1.5, 1.5]*4),
                       # virtual impedance wrench control
                       # 'kp_lin_real': np.array([300, 300., 300.]), # x y z
                       # 'kd_lin_real': np.array([30., 30., 30.]),
                       # 'kp_ang_real': np.array([50, 50., 50.]), # R P Y
                       # 'kd_ang_real': np.array([10., 10., 10.]),
-                      'kp_lin_real': np.array([300., 200., 350.]), #np.array([300., 300., 400.]), # x y z
-                      'kd_lin_real': np.array([40., 40., 80.]), #np.array([30., 20., 60.]),
-                      'kp_ang_real': np.array([40., 80., 40.]), # #np.array([30., 50., 30.]), # R P Y
-                      'kd_ang_real': np.array([3., 5., 3.]), #np.array([2., 4., 2.]),
+                      'kp_lin_real': 0.5*np.array([300., 200., 350.]), #np.array([300., 300., 400.]), # x y z
+                      'kd_lin_real': 0.5*np.array([40., 40., 80.]), #np.array([30., 20., 60.]),
+                      'kp_ang_real': 0.5*np.array([40., 80., 40.]), # #np.array([30., 50., 30.]), # R P Y
+                      'kd_ang_real': 0.5*np.array([3., 5., 3.]), #np.array([2., 4., 2.]),
                       # joint configuration
                       'q_0':  np.array([0.2, 0.78, -1.7,  0.2, 0.78, -1.7, -0.2, 0.78, -1.7, -0.2, 0.78, -1.7]),
                       'q_fold': np.array([0.2, 1.7, -2.7, 0.2,  1.7, -2.7, -0.2, 1.7,  -2.7, -0.2, 1.7, -2.7]),
+                      'q_0_td': np.array([0.1789, 1.2234, -2.2329, 0.1867, 1.4733, -2.1055, -0.1784, 1.2230, -2.2327, -0.1861, 1.4733, -2.1053]),
+                      'q_0_lo': np.array([0.3430, 1.5495, -2.6620, 0.3433, 1.9171, -2.4902, -0.3425, 1.5490, -2.6620, -0.3424, 1.9171, -2.4901]),
                       'joint_names': ['lf_haa_joint',  'lf_hfe_joint', 'lf_kfe_joint',
                                       'lh_haa_joint',  'lh_hfe_joint', 'lh_kfe_joint',
                                       'rf_haa_joint',  'rf_hfe_joint', 'rf_kfe_joint',
                                       'rh_haa_joint',  'rh_hfe_joint', 'rh_kfe_joint'],
                       # ee params
                       'ee_frames': ['lf_foot', 'lh_foot', 'rf_foot','rh_foot'],
-                      'force_th': 18.,
-                      'contact_th': 0.01,
+                     #  'force_th': 18.,
+                      'force_th': 5.,
+                      'contact_th': 0.01, # tolerance understand when /knee base is touching the ground
                       # simulation spawn [m] and [rad]
                       'spawn_x': 0.0,
                       'spawn_y': 0.0,
@@ -141,21 +201,91 @@ robot_params['go1'] ={'dt': 0.002,
                       # use real robot or simulation
                       'real_robot': False} # note the frames are all aligned with base for joints = 0
 
-robot_params['ur5'] ={'dt': 0.001, 
-                       'kp': np.array([300, 300, 300,30,30,1]),
-                       'kd':  np.array([20,20,20,5, 5,0.5]),
-                       #'q_0':  np.array([ 0.3, -1.3, 1.0, -0.7, 0.7, 0.5]), #limits([0,pi],   [0, -pi], [-pi/2,pi/2],)
-                       'q_0':  np.array([ -0.3223527113543909,-0.7805794638446351, -2.48,-1.6347843609251917, -1.5715253988849085, -1.0017417112933558]), #limits([0,pi],   [0, -pi], [-pi/2,pi/2],)
-                       'joint_names': ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'],
-                       'ee_frame': 'tool0',
-                       'control_mode': 'point', # 'trajectory','point'
-                       'real_robot': False,
-                       'control_type': 'position', # 'position', 'torque'
-                       'gripper_sim': True,
-                       'spawn_x' : 0.5,
-                       'spawn_y' : 0.35,
-                       'spawn_z' : 1.75,
-                       'buffer_size': 50000} # note the frames are all aligned with base for joints = 0
+robot_params['go2'] ={'dt': 0.002,
+                      'buffer_size': 5001, # 120 seconds
+                      # simulation gains
+                      # stand alone joint pid
+                      'kp': 5*np.array([15., 15., 15.]*4),
+                      'kd': np.array([3., 3., 3.]*4),
+                      'ki': np.array([0., 0., 0.]*4),
+                      # joint pid + wbc (optional)
+                      'kp_wbc': 5*np.array([15., 15., 15.]*4),#np.array([10., 10., 10.]*4),
+                      'kd_wbc': np.array([1., 1., 1.]*4),#np.array([1., 1., 1.]*4),
+                      'ki_wbc': np.array([0., 0., 0.]*4),#np.array([0.3, 0.3, 0.3]*4),
+                      # virtual impedance wrench control
+                      'kp_lin': np.array([800, 500., 900.]),  # x y z
+                      'kd_lin': np.array([100, 100., 100.]),
+                      'kp_ang': np.array([100, 100., 100.]),  # R P Y
+                      'kd_ang': np.array([10., 10., 10.]),
+                      # real robot gains
+                      # stand alone joint pid
+                      'kp_real': np.array([30., 30.,30.]*4),
+                      'kd_real': 0.5*np.array([.3, .3, .3]*4),
+                      'ki_real': np.array([1.5, 1.5, 1.5]*4),
+                      # joint pid + wbc (optional)
+                      'kp_wbc_real': np.array([20., 30., 40.]*4),
+                      'kd_wbc_real': 0.5*np.array([.3, .3, .3]*4),
+                      'ki_wbc_real': np.array([1.5, 1.5, 1.5]*4),
+                      # virtual impedance wrench control
+                      # 'kp_lin_real': np.array([300, 300., 300.]), # x y z
+                      # 'kd_lin_real': np.array([30., 30., 30.]),
+                      # 'kp_ang_real': np.array([50, 50., 50.]), # R P Y
+                      # 'kd_ang_real': np.array([10., 10., 10.]),
+                      'kp_lin_real': 0.5*np.array([300., 200., 350.]), #np.array([300., 300., 400.]), # x y z
+                      'kd_lin_real': 0.5*np.array([40., 40., 80.]), #np.array([30., 20., 60.]),
+                      'kp_ang_real': 0.5*np.array([40., 80., 40.]), # #np.array([30., 50., 30.]), # R P Y
+                      'kd_ang_real': 0.5*np.array([3., 5., 3.]), #np.array([2., 4., 2.]),
+                      # joint configuration
+                      'q_0':  np.array([0.2, 0.78, -1.7,  0.2, 0.78, -1.7, -0.2, 0.78, -1.7, -0.2, 0.78, -1.7]),
+                      'q_fold': np.array([0.2, 1.7, -2.7, 0.2,  1.7, -2.7, -0.2, 1.7,  -2.7, -0.2, 1.7, -2.7]),
+                      'q_0_td': np.array([0.1789, 1.2234, -2.2329, 0.1867, 1.4733, -2.1055, -0.1784, 1.2230, -2.2327, -0.1861, 1.4733, -2.1053]),
+                      'q_0_lo': np.array([0.3430, 1.5495, -2.6620, 0.3433, 1.9171, -2.4902, -0.3425, 1.5490, -2.6620, -0.3424, 1.9171, -2.4901]),
+                      'joint_names': ['lf_haa_joint',  'lf_hfe_joint', 'lf_kfe_joint',
+                                      'lh_haa_joint',  'lh_hfe_joint', 'lh_kfe_joint',
+                                      'rf_haa_joint',  'rf_hfe_joint', 'rf_kfe_joint',
+                                      'rh_haa_joint',  'rh_hfe_joint', 'rh_kfe_joint'],
+                      # ee params
+                      'ee_frames': ['lf_foot', 'lh_foot', 'rf_foot','rh_foot'],
+                     #  'force_th': 18.,
+                      'force_th': 5.,
+                      'contact_th': 0.01, # tolerance understand when /knee base is touching the ground
+                      # simulation spawn [m] and [rad]
+                      'spawn_x': 0.0,
+                      'spawn_y': 0.0,
+                      'spawn_z': .27,
+                      'spawn_R': 0.0,
+                      'spawn_P': 0.0,
+                      'spawn_Y': 0.0,
+                      # use real robot or simulation
+                      'real_robot': False} # note the frames are all aligned with base for joints = 0
+
+
+robot_params['mantis'] ={'dt': 0.001,
+                      'buffer_size': 5001, # 120 seconds
+                      # simulation gains
+                      'kp': 2*np.array([600., 300., 300., 600., 300., 300., 600., 300., 300., 600., 300., 300.]),
+                      'kd': np.array([50., 50., 50., 50., 50., 50., 50., 50., 50., 50., 50., 50.]),
+                      'ki': np.array([0., 0., 0.]*4),
+                       #star stance config
+                      #'q_0': np.array([-1.57, 1.5, -1.5, -1.57, 1.5, -1.5,  1.57, 1.5, -1.5, 1.57, 1.5, -1.5]),
+                      # quadruped stance config
+                      'q_0': np.array([0.7, 0.75, -1.5, 0.7, 0.75, -1.5, -0.7, 0.75, -1.5, -0.7, 0.75, -1.5]),
+                      'joint_names': ['lf_hy_joint',  'lf_hp_joint', 'lf_kp_joint',
+                                      'lh_hy_joint',  'lh_hp_joint', 'lh_kp_joint',
+                                      'rf_hy_joint',  'rf_hp_joint', 'rf_kp_joint',
+                                      'rh_hy_joint',  'rh_hp_joint', 'rh_kp_joint'],
+                      # ee params
+                      'ee_frames': ['lf_foot', 'lh_foot', 'rf_foot','rh_foot'],
+                      'force_th': 18.,
+                      # simulation spawn [m] and [rad]
+                      'spawn_x': 0.0,
+                      'spawn_y': 0.0,
+                      'spawn_z': 1.,
+                      'spawn_R': 0.0,
+                      'spawn_P': 0.0,
+                      'spawn_Y': 0.0,
+                      # use real robot or simulation
+                      'real_robot': False} # note the frames are all aligned with base for joints = 0
 
 robot_params['jumpleg'] ={'dt': 0.001,
                        'kp': np.array([100, 100, 100, 10, 10, 10 ]),
@@ -168,7 +298,7 @@ robot_params['jumpleg'] ={'dt': 0.001,
                        'spawn_z' : 0.0,
                        'buffer_size': 1000} # note the frames are all aligned with base for joints = 0
 
-robot_params['mir'] ={'dt': 0.001,
+robot_params['mir'] ={'dt': 0.01,
                        'q_0':  np.array([ 0.0, 0.0]),
                        'joint_names': ['left_wheel_joint', 'right_wheel_joint'],
                        'spawn_x' : 0.0,
